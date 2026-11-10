@@ -432,6 +432,8 @@ pub fn attempt(
     let mut keys: HashMap<String, [u8; 16]> = HashMap::new();
     let mut written = known_bytes;
     let mut last_sync = std::time::Instant::now();
+    let mut win_start = std::time::Instant::now();
+    let mut win_bytes = 0u64;
 
     for (i, p) in pl.parts.iter().enumerate().skip(done) {
         if stop.load(Ordering::Relaxed) {
@@ -443,6 +445,7 @@ pub fn attempt(
         file.write_all(&data)
             .map_err(|e| Fail::Fatal(format!("write failed: {e}")))?;
         written += data.len() as u64;
+        win_bytes += data.len() as u64;
         *progressed = true;
 
         // a rough size, so the progress bar moves
@@ -459,13 +462,25 @@ pub fn attempt(
             .unwrap_or(0);
         let estimate = by_time.max(by_parts).max(written);
 
+        // the speed of the last few seconds
+        let elapsed = win_start.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.05 {
+            win_bytes as f64 / elapsed
+        } else {
+            0.0
+        };
+
         sh.update(id, |it| {
             it.hls_done = done_now as u32;
             it.hls_bytes = written;
             it.downloaded = written;
             it.size = Some(estimate);
-            it.speed = 0.0;
+            it.speed = speed;
         });
+        if win_start.elapsed() >= std::time::Duration::from_secs(3) {
+            win_start = std::time::Instant::now();
+            win_bytes = 0;
+        }
         if last_sync.elapsed() >= std::time::Duration::from_secs(3) {
             let _ = file.flush();
             let _ = file.sync_data();
