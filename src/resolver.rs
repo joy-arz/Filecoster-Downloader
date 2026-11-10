@@ -1,7 +1,7 @@
 //! Everything that knows what filecoster.com pages look like.
 //! If the site changes, this is the only file that should need touching.
 
-use crate::model::{sanitize, LinkKind};
+use crate::model::{sanitize, LinkKind, VIDEO_EXTS};
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 use std::collections::HashSet;
@@ -331,8 +331,6 @@ struct Ctx {
     /// an HLS (.m3u8) stream was seen somewhere: we can't download those
     saw_hls: bool,
 }
-
-const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mkv", "mov", "m4v", "avi", "flv", "ts"];
 
 fn path_ext(url: &str) -> Option<String> {
     let u = Url::parse(url).ok()?;

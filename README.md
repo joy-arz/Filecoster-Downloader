@@ -58,7 +58,9 @@ SSD/
   looks for that folder next to itself, then on the drive root, then one level up.
 - Names are cleaned up for Windows, macOS and exFAT: no `< > : " / \ | ? *`, no reserved names
   (`CON`, `LPT1`, …), no trailing dots or spaces, at most 120 characters, and no leading `#`.
-  Two videos with the same name in the same folder get ` [code]` added.
+  Two videos with the same name in the same folder get ` [code]` added. The extension is never
+  written twice: a title that already ends in `.mp4` stays `video.mp4`, and a stream that is
+  really MPEG-TS becomes `video.ts`.
 - Only one copy of the app may use the same queue: the second one is stopped with a message.
 
 ## Formatting the SSD as exFAT
@@ -161,3 +163,14 @@ The tests run against a small mock of filecoster:
 python3 tests/mock_server.py &   # fake filecoster on :8765
 cargo test
 ```
+
+There are also two tests that talk to the **real** site (they need internet and are skipped by
+default). They are handy when the site changes:
+
+```
+cargo test -- --ignored real_site --nocapture
+```
+
+They print the title, the link and the Referer that were found, and download one small stream
+to check that the whole chain still works. When a download fails, the app saves every page it
+visited to `filecoster-data/debug/<code>.html`, `<code>.1.html`, … — start there.

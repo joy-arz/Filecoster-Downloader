@@ -9,6 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 pub const APP_FOLDER: &str = "Funny Vid Filecoaster";
 /// Queue + settings live in this folder next to the app, so they travel with the drive.
 pub const DATA_DIR: &str = "filecoster-data";
+/// The video extensions we know about.
+pub const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mkv", "mov", "m4v", "avi", "flv", "ts"];
 
 // ───────────────────────── links & items ─────────────────────────
 
@@ -96,12 +98,56 @@ pub struct Item {
 }
 
 impl Item {
+    /// "video.mp4" – but not "video.mp4.mp4" when the title already ends with the extension
     pub fn file_name(&self) -> String {
-        format!("{}.{}", self.stem, self.ext)
+        self.file_name_with(&self.ext)
     }
+
+    pub fn file_name_with(&self, ext: &str) -> String {
+        let stem = self.with_right_ext(ext);
+        if has_ext(&stem, ext) {
+            stem
+        } else {
+            format!("{stem}.{ext}")
+        }
+    }
+
+    /// the file that is being downloaded
     pub fn part_name(&self) -> String {
-        format!("{}.{}.part", self.stem, self.ext)
+        self.part_name_with(&self.ext)
     }
+
+    pub fn part_name_with(&self, ext: &str) -> String {
+        let stem = self.with_right_ext(ext);
+        if has_ext(&stem, ext) {
+            format!("{stem}.part")
+        } else {
+            format!("{stem}.{ext}.part")
+        }
+    }
+
+    /// A title that ends in another video extension ("video.mp4") is saved with the extension
+    /// the file really has ("video.ts").
+    fn with_right_ext(&self, ext: &str) -> String {
+        let lower = self.stem.to_ascii_lowercase();
+        let want = ext.to_ascii_lowercase();
+        for e in VIDEO_EXTS {
+            if *e == want {
+                continue;
+            }
+            if lower.ends_with(&format!(".{e}")) {
+                return self.stem[..self.stem.len() - e.len() - 1].to_string();
+            }
+        }
+        self.stem.clone()
+    }
+}
+
+/// Does the name already end with this extension?
+fn has_ext(stem: &str, ext: &str) -> bool {
+    let stem = stem.to_ascii_lowercase();
+    let ext = ext.to_ascii_lowercase();
+    !ext.is_empty() && stem.len() > ext.len() + 1 && stem.ends_with(&format!(".{ext}"))
 }
 
 // ───────────────────────── settings & state ─────────────────────────

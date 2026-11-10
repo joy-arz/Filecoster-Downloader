@@ -389,8 +389,8 @@ pub fn attempt(
     } else {
         item.ext.clone()
     };
-    let part = dir.join(format!("{}.{}.part", item.stem, ext));
-    let fin = dir.join(format!("{}.{}", item.stem, ext));
+    let part = dir.join(item.part_name_with(&ext));
+    let fin = dir.join(item.file_name_with(&ext));
     *part_out = Some(part.clone());
 
     // where do we continue? (the state may be newer than the copy we were given)

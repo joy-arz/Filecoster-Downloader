@@ -139,6 +139,38 @@ fn folder_rule_and_names() {
     assert_eq!(sanitize("a/b:c?*"), "a_b_c__");
     assert_eq!(sanitize("CON"), "CON_");
     assert_eq!(sanitize("..."), "video");
+
+    // the extension is not written twice
+    let mut it = Item {
+        id: 1,
+        code: "x".into(),
+        page_url: "".into(),
+        stem: "adik masih SMA tobrut viral.mp4".into(),
+        subdir: "".into(),
+        ext: "mp4".into(),
+        direct_url: None,
+        referer: None,
+        size: None,
+        status: ItemStatus::Ready,
+        error: String::new(),
+        hls: false,
+        hls_done: 0,
+        hls_total: 0,
+        hls_bytes: 0,
+        downloaded: 0,
+        speed: 0.0,
+    };
+    assert_eq!(it.file_name(), "adik masih SMA tobrut viral.mp4");
+    assert_eq!(it.part_name(), "adik masih SMA tobrut viral.mp4.part");
+    // a stream is saved as .ts, so the .mp4 of the title is replaced
+    it.ext = "ts".into();
+    assert_eq!(it.file_name(), "adik masih SMA tobrut viral.ts");
+    assert_eq!(it.part_name(), "adik masih SMA tobrut viral.ts.part");
+    // but a title that already ends in .ts does not get it twice
+    it.stem = "video.ts".into();
+    it.ext = "ts".into();
+    assert_eq!(it.file_name(), "video.ts");
+    assert_eq!(it.part_name(), "video.ts.part");
 }
 
 #[test]
@@ -622,6 +654,89 @@ fn downloads_a_fragmented_hls_stream() {
     want.extend(expected("seg1", 100_000));
     want.extend(expected("seg2", 200_000));
     assert_eq!(got, want, "the init segment comes first");
+}
+
+/// Checks the real site (needs internet).
+/// Run with:  cargo test -- --ignored real_site
+#[test]
+#[ignore]
+fn real_site_resolves_the_video() {
+    let agent = resolver::agent();
+    let dbg = std::env::temp_dir().join("fcdl-real-debug");
+    let code = "0xt47mj32rtp";
+    let m = resolver::resolve_media(
+        &agent,
+        &format!("https://filecoster.com/d/{code}"),
+        &dbg,
+        code,
+    )
+    .ok()
+    .expect("the real page resolves");
+    println!("title : {}", m.title);
+    println!("url   : {}", m.probe.url);
+    println!("hls   : {}", m.probe.hls);
+    println!("ext   : {}", m.probe.ext);
+    println!("size  : {:?}", m.probe.size);
+    println!("referer: {}", m.probe.referer);
+    assert!(m.probe.hls, "this video is an HLS stream");
+}
+
+/// Downloads a real stream from the site (needs internet, ~a few MB).
+/// Run with:  cargo test -- --ignored real_site
+#[test]
+#[ignore]
+fn real_site_downloads_a_stream() {
+    use crate::hls;
+    let agent = resolver::agent();
+    let dbg = std::env::temp_dir().join("fcdl-real-debug");
+    let dir = std::env::temp_dir().join("fcdl-real-download");
+    let _ = std::fs::remove_dir_all(&dir);
+    let sh = shared(&dir);
+    let code = "0xt47mj32rtp";
+    let page = format!("https://filecoster.com/d/{code}");
+
+    let m = resolver::resolve_media(&agent, &page, &dbg, code)
+        .ok()
+        .expect("the real page resolves");
+    assert!(m.probe.hls);
+
+    // use the smallest variant, so the test does not download the whole video
+    let text = std::fs::read_to_string(dbg.join(format!("{code}.2.html"))).unwrap_or_default();
+    let master = resolver::send(agent.get(&m.probe.url).set("Referer", &m.probe.referer))
+        .unwrap()
+        .into_string()
+        .unwrap();
+    let variants = hls::parse_master(&master);
+    assert!(!variants.is_empty(), "the master playlist has variants");
+    let small = hls::resolve(&m.probe.url, &variants[0].url);
+    println!("variant : {}", small);
+
+    sh.lock().add_item(
+        code,
+        &page,
+        &m.title,
+        "",
+        Some(small),
+        None,
+        "ts",
+        Some(m.probe.referer.clone()),
+        true,
+    );
+    let id = sh.lock().items[0].id;
+    run_item(&sh, id);
+
+    let it = sh.lock().items[0].clone();
+    println!("status  : {:?}", it.status);
+    println!("error   : {}", it.error);
+    println!("parts   : {}/{}", it.hls_done, it.hls_total);
+    assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
+
+    let p = sh.item_dir(&it).join(it.file_name());
+    let data = std::fs::read(&p).unwrap();
+    println!("file    : {} ({} bytes)", p.display(), data.len());
+    assert!(data.len() > 100_000, "the file is too small");
+    assert_eq!(data[0], 0x47, "it starts with an MPEG-TS sync byte");
+    let _ = text;
 }
 
 /// The three ways a server can mess up a resume, and what the downloader has to do about it.
