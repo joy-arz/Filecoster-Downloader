@@ -11,7 +11,8 @@ The app works in two phases, so nothing is downloaded before you say so.
    - **The links do not have to be separated by Enter.** One per line, separated by spaces or
      commas, or dropped in the middle of a sentence — anything goes. The scheme and `www.` are
      optional and the same link twice is only taken once.
-   - `/d/…` and `/s/…` are single videos; they are resolved right away (title, size, link)
+   - `/d/…`, `/s/…` and `/e/…` are single videos (the three are the same thing); they are
+     resolved right away (title, size, link)
    - `/f/…` is a folder: every page and every sub-folder is crawled, and its videos are added
      with their title and page URL only — they are looked up when you download them
    - **Paste from clipboard** puts whatever is on the clipboard into the box, **Import .txt…**
@@ -112,8 +113,8 @@ First launch on macOS may need right-click > Open (unsigned app).
 
 ## How video pages are resolved
 
-A `/d/` or `/s/` page contains no video file. It has a generic `<title>` ("funny vid"), a hidden
-iframe and a script that hands a player URL to that iframe:
+A `/d/`, `/s/` or `/e/` page contains no video file. It has a generic `<title>` ("funny vid"), a
+hidden iframe and a script that hands a player URL to that iframe:
 
 ```js
 var SRC = '/ip129jk?id=…&t=<base64 json>.<signature>';

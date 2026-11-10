@@ -578,7 +578,7 @@ impl eframe::App for App {
                     .desired_width(f32::INFINITY),
             ));
             ui.weak(
-                "Any format works: one link per line, separated by spaces, or dropped in the middle of a sentence.  /d/ and /s/ = one video, /f/ = a folder of videos.",
+                "Any format works: one link per line, separated by spaces, or dropped in the middle of a sentence.  /d/, /s/ and /e/ = one video, /f/ = a folder of videos.",
             );
             let parsed = resolver::parse_links(&self.input);
             let folders = parsed.iter().filter(|p| p.kind == model::LinkKind::Folder).count();

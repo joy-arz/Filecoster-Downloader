@@ -63,6 +63,37 @@ fn parses_all_link_types_from_messy_text() {
     assert_eq!(p[2].url, "https://filecoster.com/f/abc123");
 }
 
+/// /d/, /s/ and /e/ are the same thing: one video.
+#[test]
+fn the_three_video_links_are_the_same() {
+    let p = resolver::parse_links(
+        "https://filecoster.com/d/aaa https://filecoster.com/s/aaa https://filecoster.com/e/aaa",
+    );
+    assert_eq!(p.len(), 3, "they are three different links");
+    for x in &p {
+        assert_eq!(x.kind, LinkKind::Single);
+        assert_eq!(x.code, "aaa");
+    }
+    // each keeps the way it was written
+    assert_eq!(p[0].url, "https://filecoster.com/d/aaa");
+    assert_eq!(p[1].url, "https://filecoster.com/s/aaa");
+    assert_eq!(p[2].url, "https://filecoster.com/e/aaa");
+
+    // a link with another word in front of it is not a video link
+    let p = resolver::parse_links("https://filecoster.com/v/aaa https://filecoster.com/x/aaa");
+    assert!(p.is_empty(), "{p:?}");
+
+    // in the queue the three ways of the same video are one link
+    let mut st = State::default();
+    assert!(st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/d/aaa"));
+    assert!(!st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/s/aaa"));
+    assert!(!st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/e/aaa"));
+    assert_eq!(st.links.len(), 1);
+    // a folder is something else
+    assert!(st.add_link(LinkKind::Folder, "aaa", "https://filecoster.com/f/aaa"));
+    assert_eq!(st.links.len(), 2);
+}
+
 /// The links do NOT have to be separated by Enter: any separator works, and links that sit
 /// in the middle of a sentence are found too.
 #[test]

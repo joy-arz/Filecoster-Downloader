@@ -16,7 +16,7 @@ pub const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mkv", "mov", "m4v", "avi", "fl
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub enum LinkKind {
-    /// /d/<code> or /s/<code>: one video
+    /// /d/<code>, /s/<code> or /e/<code>: one video
     Single,
     /// /f/<code>: a folder of videos
     Folder,
@@ -226,12 +226,12 @@ impl State {
     }
 
     /// Returns false if this link is already in the list (an errored one is re-armed instead).
+    /// /d/, /s/ and /e/ with the same code are the same video, so they count as one.
     pub fn add_link(&mut self, kind: LinkKind, code: &str, url: &str) -> bool {
-        if let Some(l) = self
-            .links
-            .iter_mut()
-            .find(|l| l.kind == kind && l.code == code)
-        {
+        if let Some(l) = self.links.iter_mut().find(|l| {
+            l.code == code
+                && (l.kind == kind || (l.kind == LinkKind::Single && kind == LinkKind::Single))
+        }) {
             if matches!(l.status, LinkStatus::Error(_)) {
                 l.status = LinkStatus::New;
                 return true;

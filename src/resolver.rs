@@ -36,6 +36,7 @@ pub fn send(req: ureq::Request) -> Result<ureq::Response, String> {
 
 // ───────────────────────── link parsing ─────────────────────────
 
+#[derive(Debug)]
 pub struct Parsed {
     pub kind: LinkKind,
     pub code: String,
@@ -43,12 +44,12 @@ pub struct Parsed {
 }
 
 /// Pulls every filecoster link out of any pasted text.
-///   /d/<code> and /s/<code> -> single video
-///   /f/<code>               -> folder of videos
+///   /d/<code>, /s/<code> and /e/<code> -> single video
+///   /f/<code>                          -> folder of videos
 pub fn parse_links(text: &str) -> Vec<Parsed> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)(?:https?://)?(?:[a-z0-9-]+\.)*filecoster\.com/(d|s|f)/([A-Za-z0-9_-]+)")
+        Regex::new(r"(?i)(?:https?://)?(?:[a-z0-9-]+\.)*filecoster\.com/(d|s|e|f)/([A-Za-z0-9_-]+)")
             .unwrap()
     });
     let mut seen = HashSet::new();
@@ -75,7 +76,7 @@ pub fn parse_links(text: &str) -> Vec<Parsed> {
 fn classify(url: &Url) -> Option<(LinkKind, String)> {
     let mut seg = url.path_segments()?;
     let kind = match seg.next()? {
-        "d" | "s" => LinkKind::Single,
+        "d" | "s" | "e" => LinkKind::Single,
         "f" => LinkKind::Folder,
         _ => return None,
     };
