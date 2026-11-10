@@ -419,6 +419,8 @@ enum Probed {
     Playlist,
     /// nothing usable
     No,
+    /// the server had a problem (timeout, 429, 5xx): worth trying again
+    Retry,
 }
 
 /// Asks the server for the first byte only: "is this a real video, and how big".
@@ -430,9 +432,12 @@ fn probe(agent: &ureq::Agent, url: &str, referer: &str) -> Probed {
             .set("Range", "bytes=0-0"),
     ) {
         Ok(r) => r,
-        Err(_) => return Probed::No,
+        Err(_) => return Probed::Retry,
     };
     let st = resp.status();
+    if st == 429 || (500..600).contains(&st) {
+        return Probed::Retry;
+    }
     if st != 200 && st != 206 {
         return Probed::No;
     }
@@ -481,6 +486,26 @@ fn is_hls_url(url: &str) -> bool {
         .map(|u| u.path().to_ascii_lowercase())
         .unwrap_or_else(|| url.to_ascii_lowercase());
     path.ends_with(".m3u8")
+}
+
+/// Checks one candidate. A CDN that hiccups for a moment (timeout, 429, 503) must not make the
+/// whole video look broken, so the check is repeated a few times.
+fn check_candidate(agent: &ureq::Agent, url: &str, referer: &str) -> Option<Probe> {
+    for attempt in 0..3u32 {
+        match probe(agent, url, referer) {
+            Probed::Video(p) => return Some(p),
+            Probed::Playlist => return probe_hls(agent, url, referer),
+            Probed::Retry if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(800 * (attempt as u64 + 1)));
+            }
+            _ => break,
+        }
+    }
+    // the playlist may be served as plain text
+    if is_hls_url(url) {
+        return probe_hls(agent, url, referer);
+    }
+    None
 }
 
 /// One request that tells us whether a URL is a page (returns its text) or already the video.
@@ -728,21 +753,8 @@ fn find_media(
         candidates(&doc, html, &base)
     };
     for u in &direct {
-        match probe(agent, u, page_url) {
-            Probed::Video(p) => return Some(p),
-            Probed::Playlist => {
-                if let Some(p) = probe_hls(agent, u, page_url) {
-                    return Some(p);
-                }
-            }
-            Probed::No => {
-                // the playlist may be served as plain text
-                if is_hls_url(u) {
-                    if let Some(p) = probe_hls(agent, u, page_url) {
-                        return Some(p);
-                    }
-                }
-            }
+        if let Some(p) = check_candidate(agent, u, page_url) {
+            return Some(p);
         }
     }
     if depth < 3 {

@@ -825,3 +825,26 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
         "the mismatched part was deleted and the file downloaded again"
     );
 }
+
+/// Resolves one code from the real site and prints what was found. Handy when a video does not
+/// work:  CODE=abc123 cargo test -- --ignored real_site_debug -- --nocapture
+#[test]
+#[ignore]
+fn real_site_debug_one_code() {
+    let agent = resolver::agent();
+    let dbg = std::env::temp_dir().join("fcdl-real-debug");
+    let code = std::env::var("CODE").unwrap_or_else(|_| "0xt47mj32rtp".into());
+    let res = resolver::resolve_media(
+        &agent,
+        &format!("https://filecoster.com/d/{code}"),
+        &dbg,
+        &code,
+    );
+    match res {
+        Ok(m) => println!(
+            "OK  title={}\n    url={}\n    hls={} ext={} size={:?}\n    referer={}",
+            m.title, m.probe.url, m.probe.hls, m.probe.ext, m.probe.size, m.probe.referer
+        ),
+        Err(e) => println!("ERR {}", e.msg),
+    }
+}
