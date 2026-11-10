@@ -132,7 +132,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s globstar
-          gh release create "${{ github.ref_name }}" dist/** \
+          gh release create "${{ github.ref_name }}" $(find dist -type f) \
             --title "Filecoster Downloader ${{ github.ref_name }}" \
             --generate-notes
