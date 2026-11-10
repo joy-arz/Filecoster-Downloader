@@ -1,0 +1,132 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  checks:
+    name: format, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: unit tests (against the mock filecoster)
+        run: |
+          python3 tests/mock_server.py &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8765/f/root >/dev/null && break
+            sleep 0.5
+          done
+          cargo test
+
+      - name: release build
+        run: cargo build --release
+
+  linux:
+    name: linux
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: mkdir -p dist/linux && cp target/release/filecoster-dl dist/linux/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filecoster-dl-linux
+          path: dist/
+          if-no-files-found: error
+
+  windows:
+    name: windows
+    needs: checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: mkdir dist\windows && copy target\release\filecoster-dl.exe dist\windows\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filecoster-dl-windows
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    name: macos (universal)
+    needs: checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - name: one binary for Intel and Apple Silicon
+        shell: bash
+        run: |
+          mkdir -p dist/macos
+          lipo -create -output dist/macos/filecoster-dl-mac \
+            target/aarch64-apple-darwin/release/filecoster-dl \
+            target/x86_64-apple-darwin/release/filecoster-dl
+          chmod +x dist/macos/filecoster-dl-mac
+          tar -czf dist/macos/filecoster-dl-mac.tar.gz -C dist/macos filecoster-dl-mac
+          rm dist/macos/filecoster-dl-mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filecoster-dl-macos
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: github release
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/** \
+            --title "Filecoster Downloader ${{ github.ref_name }}" \
+            --generate-notes
