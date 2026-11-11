@@ -577,13 +577,22 @@ impl eframe::App for App {
                             forget_used = true;
                         }
                     });
+                    if !shared.paths.portable {
+                        ui.label(
+                            RichText::new(
+                                "The app's folder is read-only, so the queue is stored on this computer instead.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
                     let where_ = shared.paths.data_dir.display().to_string();
                     ui.label(
-                        RichText::new(if shared.paths.portable {
-                            format!("Queue & settings are stored next to the app, so they travel with the drive:\n{where_}")
-                        } else {
-                            format!("The app's folder is read-only, so the queue is stored on this computer instead:\n{where_}")
-                        })
+                        RichText::new(format!(
+                            "Filecoster Downloader {}\n{}",
+                            env!("CARGO_PKG_VERSION"),
+                            where_
+                        ))
                         .small()
                         .weak(),
                     );
