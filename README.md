@@ -3,6 +3,56 @@
 Minimal, portable bulk downloader for filecoster.com. One small app (Rust + egui), no installer,
 one binary per operating system.
 
+## Usage tutorial
+
+**1. Get the app**
+
+Download the binary for your system from the [releases](https://github.com/joy-arz/Filecoster-Downloader/releases):
+
+| File | Platform |
+|---|---|
+| `filecoster-dl-mac.tar.gz` | macOS (Intel **and** Apple Silicon) |
+| `filecoster-dl.exe` | Windows |
+| `filecoster-dl` | Linux |
+
+Unpack it and put the program next to a folder called `filecoster-data` (the app makes this
+folder itself the first time it starts). On macOS the first start may need right-click → **Open**,
+or `xattr -d com.apple.quarantine filecoster-dl-mac`.
+
+**2. Collect the links**
+
+The links come from wherever you found them — a chat, a forum, or X/Twitter. For X/Twitter there
+is a ready-made script, see [Collecting links with Tampermonkey](#collecting-links-with-tampermonkey).
+
+**3. Paste and fetch**
+
+Open the app and paste the links into the big box. **The links do not have to be separated by
+Enter** — one per line, separated by spaces or commas, or dropped in the middle of a sentence all
+work. Or use **Paste from clipboard**, or **Import .txt…** for a file you saved earlier.
+
+Press **Add & fetch**. The app now looks at every link:
+
+- `/d/…`, `/s/…` and `/e/…` are one video each — the title, the size and the link are found now
+- `/f/…` is a folder: every page and every sub-folder is crawled and its videos are added
+- the queue is saved, so you can close the app and come back later
+
+**4. Download**
+
+Press **Download all** (or **Queue** on a single row). The videos are saved into the folder
+`Funny Vid Filecoaster` — inside the folder you chose with **Change…**, or next to the app if
+you never changed it. Videos of a folder link go into a sub-folder named after it.
+
+**5. Keep it tidy**
+
+- **Pause all** stops everything, **Resume** / **Queue** starts a single video again
+- **Retry failed** tries the failed ones again
+- **Clear finished** takes the finished videos out of the list (the files stay where they are)
+- **Reference .txt…** marks videos as "I already have them" so they are never fetched again
+- **Export my links…** (in *Settings*) writes a `.txt` with everything you downloaded
+
+**The filters** (All, Ready, In queue, Done, Failed) sit under the buttons, and the bar at the
+bottom shows how much is left, how fast it is going and how long it will take.
+
 ## How it works
 
 The app works in two phases, so nothing is downloaded before you say so.
@@ -39,17 +89,315 @@ The code of a video is what identifies it, so the same video is only ever downlo
 - the same video in two different folders is still one queue entry
 - the codes are not case sensitive: `/D/ABC` and `/d/abc` are the same
 - a file that is already on the disk with the right size is not downloaded again
-- two videos with the same name in the same folder get ` [code]` added
+- two videos with the same name in the same folder get ` [code]` added — even when they are
+  downloaded at the same time, so one never overwrites the other
 
 ### The reference list
 
 **Reference .txt…** loads a list of the links you already have. Those videos are then never
 fetched or downloaded again, no matter which folder or link they turn up in — the app tells you
-how many it skipped.
+how many it skipped, and the ones still in the queue are taken out of it.
 
 **Export my links…** (in *Settings*) writes a `.txt` with the links of everything you already
 downloaded. That file can be used as the reference list on another computer, so the two do not
 download the same videos twice. Both lists are saved in `filecoster-data/state.json`.
+
+## Collecting links with Tampermonkey
+
+For X/Twitter there is a small script that collects the links while you scroll and saves them as a
+`.txt` you can import into the app.
+
+**Install it**
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) (Chrome, Edge, Firefox, Safari)
+2. Open the extension → **Add a new script** → delete everything in the editor
+3. Paste the script below → **Ctrl+S** (or the save button) → it is active on x.com right away
+
+**Use it**
+
+- scroll through the posts — the links are collected as they come by
+- the blue button in the top right corner shows how many unique links there are
+- click it to save them as `filecoster-links-<date>.txt`
+- in the app: **Import .txt…** and pick that file
+
+The script also understands `tribunvideo.com` links (the same thing under another name), removes
+duplicates and asks `t.co` where a shortened link really points.
+
+```javascript
+// ==UserScript==
+// @name         X → Filecoster Link Collector
+// @namespace    https://x.com/
+// @version      1.1.0
+// @description  Collects tribunvideo.com/filecoster.com links from posts as you scroll on x.com, converts them to filecoster.com, and saves them as a .txt (one per line, duplicates removed).
+// @match        https://x.com/*
+// @match        https://twitter.com/*
+// @run-at       document-idle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      t.co
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  /* ---------------------------- CONFIG ---------------------------- */
+  const STORE_KEY = 'fc_collected_links_v1';
+  const TARGET_HOST = 'filecoster.com';
+
+  // Link "type" = the segment after the domain (f, e, d, s, ...).
+  // {1,2} = 1 or 2 letters. Raise it (e.g. {1,3}) if longer types appear.
+  const TYPE_PATTERN = '[A-Za-z]{1,2}';
+
+  // Real codes are 11 chars (/f/) or 12 chars (/d/ /e/ /s/). Anything shorter
+  // than this is treated as a cut-off code and resolved through t.co instead.
+  const MIN_CODE_LEN = 11;
+
+  // How many t.co lookups may run at the same time (keep low, be polite).
+  const TCO_CONCURRENCY = 2;
+  /* ---------------------------------------------------------------- */
+
+  // tribunvideo.com/<type>/<code> or filecoster.com/<type>/<code>, with or
+  // without https:// and www. Group 3 catches the "…" X adds when it shortens
+  // a long link.
+  const LINK_RE = new RegExp(
+    '(?<![A-Za-z0-9.\\-])(?:https?:\\/\\/)?(?:www\\.)?(?:tribunvideo|filecoster)\\.com\\/(' +
+      TYPE_PATTERN +
+      ')\\/([A-Za-z0-9_\\-]+)(…|\\.\\.\\.)?',
+    'g'
+  );
+  const DOMAIN_HINT_RE = /tribunvideo\.com|filecoster\.com/i;
+  const TCO_RE = /^https?:\/\/t\.co\//i;
+
+  let cache = new Set(GM_getValue(STORE_KEY, []));
+
+  /* ---------------------------- EXTRACTION ---------------------------- */
+
+  // Returns complete, normalised filecoster.com links found in a string.
+  // Cut-off links (ending in "…" or with a too-short code) are ignored here.
+  function extract(str) {
+    const out = [];
+    for (const m of str.matchAll(LINK_RE)) {
+      if (m[3] || m[2].length < MIN_CODE_LEN) continue;
+      out.push('https://' + TARGET_HOST + '/' + m[1] + '/' + m[2]);
+    }
+    return out;
+  }
+
+  function scan() {
+    const found = [];
+    document.querySelectorAll('article a').forEach((a) => {
+      const title = a.getAttribute('title') || '';
+      const href = a.getAttribute('href') || '';
+      const text = a.textContent || '';
+
+      // title usually holds the full expanded URL; text can be shortened by X.
+      // Long anchors (link cards) are skipped for text: their spans are glued together.
+      const sources = [title, href];
+      if (text.length <= 80) sources.push(text);
+      for (const s of sources) {
+        if (!s) continue;
+        const res = extract(s);
+        if (res.length) {
+          found.push(...res);
+          return;
+        }
+      }
+
+      // Nothing usable: either X shortened the link, or it is a link card that
+      // only shows the domain. Ask t.co where it really points.
+      if (TCO_RE.test(href) && DOMAIN_HINT_RE.test(title + ' ' + text + ' ' + (a.getAttribute('aria-label') || ''))) {
+        queueResolve(href);
+      }
+    });
+    addLinks(found);
+    render();
+  }
+
+  /* ---------------------------- t.co RESOLVER ---------------------------- */
+
+  const tcoState = new Map(); // url -> 'queued' | 'done' | 'failed'
+  const tcoQueue = [];
+  let tcoActive = 0;
+
+  function queueResolve(url) {
+    if (typeof GM_xmlhttpRequest !== 'function' || tcoState.has(url)) return;
+    tcoState.set(url, 'queued');
+    tcoQueue.push(url);
+    pump();
+  }
+
+  function pump() {
+    while (tcoActive < TCO_CONCURRENCY && tcoQueue.length) {
+      const url = tcoQueue.shift();
+      tcoActive++;
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: url,
+        anonymous: true,
+        timeout: 15000,
+        onload: (r) => {
+          let links = extract(r.finalUrl || '');
+          // If t.co did not redirect, its page contains the target URL itself
+          if (!links.length && /^https?:\/\/t\.co\//i.test(r.finalUrl || url)) {
+            links = extract((r.responseText || '').replace(/\\\//g, '/'));
+          }
+          links = [...new Set(links)].slice(0, 1);
+          finishResolve(url, links, r.status === 200 || links.length > 0);
+        },
+        onerror: () => finishResolve(url, [], false),
+        ontimeout: () => finishResolve(url, [], false),
+      });
+    }
+  }
+
+  function finishResolve(url, links, definitive) {
+    tcoActive--;
+    if (links.length) {
+      tcoState.set(url, 'done');
+      addLinks(links);
+    } else {
+      tcoState.set(url, 'failed');
+      // network problem / rate limit -> allow a retry later
+      if (!definitive) setTimeout(() => tcoState.delete(url), 30000);
+    }
+    render();
+    pump();
+  }
+
+  function pendingCount() {
+    return tcoQueue.length + tcoActive;
+  }
+
+  function failedCount() {
+    let n = 0;
+    tcoState.forEach((v) => {
+      if (v === 'failed') n++;
+    });
+    return n;
+  }
+
+  /* ------------------------------ STORAGE ------------------------------ */
+
+  function addLinks(list) {
+    const fresh = list.filter((l) => !cache.has(l));
+    if (!fresh.length) return;
+    // merge with storage first, in case another tab collected links meanwhile
+    const merged = new Set(GM_getValue(STORE_KEY, []));
+    fresh.forEach((l) => merged.add(l));
+    cache = merged;
+    GM_setValue(STORE_KEY, [...cache]);
+  }
+
+  function refreshFromStorage() {
+    cache = new Set([...GM_getValue(STORE_KEY, []), ...cache]);
+    render();
+  }
+
+  /* ------------------------------ ACTIONS ------------------------------ */
+
+  function saveTxt() {
+    scan();
+    // final duplicate check right before saving
+    const unique = [...new Set([...GM_getValue(STORE_KEY, []), ...cache])];
+    if (!unique.length) {
+      flash('No links yet');
+      return;
+    }
+    cache = new Set(unique);
+    GM_setValue(STORE_KEY, unique);
+
+    const blob = new Blob([unique.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp =
+      d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    a.href = url;
+    a.download = 'filecoster-links-' + stamp + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    const pending = pendingCount();
+    flash('Saved ' + unique.length + (pending ? ' (' + pending + ' still resolving)' : ''));
+  }
+
+  function clearAll() {
+    if (!cache.size) return;
+    if (!confirm('Clear all ' + cache.size + ' collected links?')) return;
+    cache = new Set();
+    GM_setValue(STORE_KEY, []);
+    render();
+  }
+
+  /* -------------------------------- UI -------------------------------- */
+
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483647;';
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML =
+    '<style>' +
+    '.wrap{display:flex;gap:6px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}' +
+    'button{border:0;cursor:pointer;font:600 13px/1 inherit;color:#fff;border-radius:999px;' +
+    'box-shadow:0 2px 8px rgba(0,0,0,.35);transition:filter .15s}' +
+    'button:hover{filter:brightness(1.15)}' +
+    '#save{background:#1d9bf0;padding:10px 16px}' +
+    '#clear{background:#536471;padding:10px 12px}' +
+    '</style>' +
+    '<div class="wrap">' +
+    '<button id="save" type="button">💾 Save (0)</button>' +
+    '<button id="clear" type="button" title="Clear collected links">✕</button>' +
+    '</div>';
+  const saveBtn = root.getElementById('save');
+  const clearBtn = root.getElementById('clear');
+  saveBtn.addEventListener('click', saveTxt);
+  clearBtn.addEventListener('click', clearAll);
+
+  let flashTimer = null;
+  function render() {
+    if (flashTimer) return; // don't overwrite a temporary message
+    const pending = pendingCount();
+    const failed = failedCount();
+    saveBtn.textContent = '💾 Save (' + cache.size + ')' + (pending ? ' …' : '');
+    let tip = cache.size + ' unique links collected';
+    if (pending) tip += '\n' + pending + ' shortened link(s) being resolved';
+    if (failed) tip += '\n' + failed + ' link(s) could not be resolved';
+    saveBtn.title = tip;
+  }
+
+  function flash(msg) {
+    saveBtn.textContent = msg;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      render();
+    }, 2200);
+  }
+
+  document.documentElement.appendChild(host);
+
+  /* ----------------------------- OBSERVER ----------------------------- */
+
+  let debounce = null;
+  new MutationObserver(() => {
+    clearTimeout(debounce);
+    debounce = setTimeout(scan, 300);
+  }).observe(document.body, { childList: true, subtree: true });
+
+  window.addEventListener('focus', refreshFromStorage);
+
+  GM_registerMenuCommand('Save links to .txt', saveTxt);
+  GM_registerMenuCommand('Clear collected links', clearAll);
+
+  scan();
+})();
+```
+
+The script is also in the repository: `scripts/x-filecoster-link-collector.user.js`.
 
 ## Portable on an external SSD
 
@@ -65,6 +413,8 @@ SSD/
       ├─ state.json
       ├─ app.lock
       └─ debug/                  <- pages saved when a video could not be found
+         ├─ failures.log         <- one line for everything that failed
+         └─ <code>.html          <- the pages of a video that could not be found
 ```
 
 - The queue and the settings live in `filecoster-data/` next to the app, so the Mac and the
@@ -171,11 +521,28 @@ The row shows `12.4 MB · 42/120 parts · 1.2 MB/s` while a stream is downloadin
 Links expire (the token has an `exp`), so a video whose link stopped working is looked up again
 automatically from its page URL.
 
-If nothing is found, every page that was visited is saved to
-`filecoster-data/debug/<code>.html`, `<code>.1.html`, … (each file starts with a comment holding
-the URL it came from). That is all that is needed to adjust the resolver. The error says how many
-pages were checked, where they were saved, and: *If you use a VPN or Cloudflare WARP, turn it
-off.*
+## When something fails
+
+Nothing is lost: every failed video is written down in **one** file,
+`filecoster-data/debug/failures.log`:
+
+```
+2026-11-11 15:14:32  z6wywxfhbunn  https://filecoster.com/d/z6wywxfhbunn
+    error: no video link found (3 page(s) checked). An HLS (.m3u8) stream was found, but it could not be read. The server said: HTTP 404. ...
+    html: z6wywxfhbunn.html, z6wywxfhbunn.1.html, z6wywxfhbunn.2.html
+```
+
+The `html:` line points to the pages that were saved for that video, so you can see exactly what
+the app saw. Each of those files starts with a comment holding the URL it came from:
+
+```
+<!-- fetched from: https://filecoster.com/stream.php?bucket=vidoyhls&id=z6wywxfhbunn&t=… -->
+```
+
+"The server said: HTTP 404" means the video is not on the CDN at all (the upload never finished
+or was removed) — trying again later is all that helps. When the CDN is only busy for a moment
+(429, 503, a timeout), the video is **not** given up on: it is retried later with the normal
+back-off. Only a page that is really gone (404, 410) stays failed.
 
 ## Tests
 
@@ -186,7 +553,7 @@ python3 tests/mock_server.py &   # fake filecoster on :8765
 cargo test
 ```
 
-There are also two tests that talk to the **real** site (they need internet and are skipped by
+There are also tests that talk to the **real** site (they need internet and are skipped by
 default). They are handy when the site changes:
 
 ```
@@ -194,5 +561,8 @@ cargo test -- --ignored real_site --nocapture
 ```
 
 They print the title, the link and the Referer that were found, and download one small stream
-to check that the whole chain still works. When a download fails, the app saves every page it
-visited to `filecoster-data/debug/<code>.html`, `<code>.1.html`, … — start there.
+to check that the whole chain still works. To look at one video on the real site:
+
+```
+CODE=abc123 cargo test -- --ignored real_site_debug -- --nocapture
+```

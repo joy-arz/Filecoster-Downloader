@@ -321,7 +321,10 @@ pub struct ResolveErr {
 enum Fetched {
     Html(String),
     Media(Probe),
+    /// the page is not there
     Bad,
+    /// the server was busy: worth trying again later
+    Busy,
 }
 
 struct Ctx {
@@ -332,6 +335,10 @@ struct Ctx {
     pages: Vec<(String, String)>,
     /// an HLS (.m3u8) stream was seen somewhere: we can't download those
     saw_hls: bool,
+    /// the server was busy (429, 5xx, timeout): it is worth trying again later
+    transient: bool,
+    /// what the server said about the last candidate ("HTTP 404")
+    note: String,
 }
 
 fn path_ext(url: &str) -> Option<String> {
@@ -457,14 +464,22 @@ fn probe(agent: &ureq::Agent, url: &str, referer: &str) -> Probed {
 }
 
 /// Looks at a full .m3u8 playlist: how long is it and is it a fragmented mp4?
-fn probe_hls(agent: &ureq::Agent, url: &str, referer: &str) -> Option<Probe> {
-    let resp = send(agent.get(url).set("Referer", referer)).ok()?;
-    if !(200..300).contains(&resp.status()) {
-        return None;
+/// Returns the error text when the server refused.
+fn probe_hls(agent: &ureq::Agent, url: &str, referer: &str) -> Result<Option<Probe>, String> {
+    let resp = match send(agent.get(url).set("Referer", referer)) {
+        Ok(r) => r,
+        Err(e) => return Err(e),
+    };
+    let status = resp.status();
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
     }
-    let text = resp.into_string().ok()?;
+    let text = match resp.into_string() {
+        Ok(t) => t,
+        Err(e) => return Err(format!("network: {e}")),
+    };
     if !text.trim_start().starts_with("#EXTM3U") {
-        return None;
+        return Ok(None);
     }
     // a fragmented mp4 has an init segment and is saved as .mp4, everything else is MPEG-TS
     let ext = if text.contains("#EXT-X-MAP:") {
@@ -472,13 +487,13 @@ fn probe_hls(agent: &ureq::Agent, url: &str, referer: &str) -> Option<Probe> {
     } else {
         "ts"
     };
-    Some(Probe {
+    Ok(Some(Probe {
         url: url.to_string(),
         size: None,
         ext: ext.into(),
         referer: referer.to_string(),
         hls: true,
-    })
+    }))
 }
 
 /// Does the URL look like an HLS playlist?
@@ -492,22 +507,35 @@ fn is_hls_url(url: &str) -> bool {
 
 /// Checks one candidate. A CDN that hiccups for a moment (timeout, 429, 503) must not make the
 /// whole video look broken, so the check is repeated a few times.
-fn check_candidate(agent: &ureq::Agent, url: &str, referer: &str) -> Option<Probe> {
+fn check_candidate(agent: &ureq::Agent, url: &str, referer: &str) -> (Option<Probe>, bool, String) {
+    let mut busy = false;
     for attempt in 0..3u32 {
         match probe(agent, url, referer) {
-            Probed::Video(p) => return Some(p),
-            Probed::Playlist => return probe_hls(agent, url, referer),
+            Probed::Video(p) => return (Some(p), busy, String::new()),
+            Probed::Playlist => {
+                return match probe_hls(agent, url, referer) {
+                    Ok(Some(p)) => (Some(p), busy, String::new()),
+                    Ok(None) => (None, busy, String::new()),
+                    Err(e) => (None, busy, e),
+                }
+            }
             Probed::Retry if attempt < 2 => {
+                busy = true; // the server had a problem
                 std::thread::sleep(Duration::from_millis(800 * (attempt as u64 + 1)));
             }
-            _ => break,
+            Probed::Retry => return (None, true, "the server did not answer".into()),
+            Probed::No => break,
         }
     }
     // the playlist may be served as plain text
     if is_hls_url(url) {
-        return probe_hls(agent, url, referer);
+        return match probe_hls(agent, url, referer) {
+            Ok(Some(p)) => (Some(p), busy, String::new()),
+            Ok(None) => (None, busy, String::new()),
+            Err(e) => (None, busy, e),
+        };
     }
-    None
+    (None, busy, String::new())
 }
 
 /// One request that tells us whether a URL is a page (returns its text) or already the video.
@@ -517,9 +545,13 @@ fn fetch_page(agent: &ureq::Agent, url: &str, referer: &str) -> Fetched {
         "text/html,application/xhtml+xml,application/json,*/*;q=0.8",
     );
     let Ok(resp) = send(rq) else {
-        return Fetched::Bad;
+        return Fetched::Busy;
     };
-    if !(200..300).contains(&resp.status()) {
+    let st = resp.status();
+    if st == 429 || (500..600).contains(&st) {
+        return Fetched::Busy;
+    }
+    if !(200..300).contains(&st) {
         return Fetched::Bad;
     }
     let ct = resp
@@ -755,7 +787,14 @@ fn find_media(
         candidates(&doc, html, &base)
     };
     for u in &direct {
-        if let Some(p) = check_candidate(agent, u, page_url) {
+        let (p, busy, note) = check_candidate(agent, u, page_url);
+        if busy {
+            ctx.transient = true;
+        }
+        if !note.is_empty() && ctx.note.is_empty() {
+            ctx.note = note;
+        }
+        if let Some(p) = p {
             return Some(p);
         }
     }
@@ -776,6 +815,7 @@ fn find_media(
                         return Some(p);
                     }
                 }
+                Fetched::Busy => ctx.transient = true,
                 Fetched::Bad => {}
             }
         }
@@ -792,6 +832,8 @@ pub fn resolve_media(
     code: &str,
 ) -> Result<Media, ResolveErr> {
     let html = get_html(agent, page_url, None).map_err(|e| ResolveErr {
+        // only a missing page is permanent: everything else (busy server, timeout) is worth
+        // another try later
         permanent: e == "HTTP 404" || e == "HTTP 410",
         msg: e,
     })?;
@@ -801,6 +843,8 @@ pub fn resolve_media(
         fetched: 0,
         pages: Vec::new(),
         saw_hls: false,
+        transient: false,
+        note: String::new(),
     };
     match find_media(agent, page_url, &html, 0, &mut ctx) {
         Some(probe) => {
@@ -819,21 +863,31 @@ pub fn resolve_media(
                 );
             };
             save(format!("{code}.html"), page_url, &html);
+            let mut names = vec![format!("{code}.html")];
             for (i, (u, body)) in ctx.pages.iter().enumerate() {
                 save(format!("{code}.{}.html", i + 1), u, body);
+                names.push(format!("{code}.{}.html", i + 1));
             }
             let hint = if ctx.saw_hls {
                 " An HLS (.m3u8) stream was found, but it could not be read."
             } else {
                 ""
             };
+            let said = if ctx.note.is_empty() {
+                String::new()
+            } else {
+                format!(" The server said: {}.", ctx.note)
+            };
+            let msg = format!(
+                "no video link found ({} page(s) checked).{hint}{said} If you use a VPN or Cloudflare WARP, turn it off. Pages saved in {}",
+                1 + ctx.pages.len(),
+                debug_dir.display()
+            );
+            // one line in the failure log, with the html files that belong to it
+            crate::model::log_failure(debug_dir, code, page_url, &msg, &names);
             Err(ResolveErr {
-                permanent: true,
-                msg: format!(
-                    "no video link found ({} page(s) checked).{hint} If you use a VPN or Cloudflare WARP, turn it off. Pages saved in {}",
-                    1 + ctx.pages.len(),
-                    debug_dir.display()
-                ),
+                permanent: !ctx.transient,
+                msg,
             })
         }
     }

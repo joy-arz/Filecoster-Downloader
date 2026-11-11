@@ -191,17 +191,29 @@ fn folder_rule_and_names() {
         downloaded: 0,
         speed: 0.0,
     };
-    assert_eq!(it.file_name(), "adik masih SMA tobrut viral.mp4");
-    assert_eq!(it.part_name(), "adik masih SMA tobrut viral.mp4.part");
+    assert_eq!(
+        file_name_of(&it.stem, &it.ext),
+        "adik masih SMA tobrut viral.mp4"
+    );
+    assert_eq!(
+        part_name_of(&it.stem, &it.ext),
+        "adik masih SMA tobrut viral.mp4.part"
+    );
     // a stream is saved as .ts, so the .mp4 of the title is replaced
     it.ext = "ts".into();
-    assert_eq!(it.file_name(), "adik masih SMA tobrut viral.ts");
-    assert_eq!(it.part_name(), "adik masih SMA tobrut viral.ts.part");
+    assert_eq!(
+        file_name_of(&it.stem, &it.ext),
+        "adik masih SMA tobrut viral.ts"
+    );
+    assert_eq!(
+        part_name_of(&it.stem, &it.ext),
+        "adik masih SMA tobrut viral.ts.part"
+    );
     // but a title that already ends in .ts does not get it twice
     it.stem = "video.ts".into();
     it.ext = "ts".into();
-    assert_eq!(it.file_name(), "video.ts");
-    assert_eq!(it.part_name(), "video.ts.part");
+    assert_eq!(file_name_of(&it.stem, &it.ext), "video.ts");
+    assert_eq!(part_name_of(&it.stem, &it.ext), "video.ts.part");
 }
 
 #[test]
@@ -327,7 +339,7 @@ fn downloads_resumes_and_relinks() {
     let st = sh.lock();
     for it in &st.items {
         assert_eq!(it.status, ItemStatus::Done, "{}: {}", it.code, it.error);
-        let p = sh.item_dir(it).join(it.file_name());
+        let p = sh.item_dir(it).join(file_name_of(&it.stem, &it.ext));
         assert_eq!(
             std::fs::read(&p).unwrap(),
             expected(&it.code, 3_000_000),
@@ -335,7 +347,9 @@ fn downloads_resumes_and_relinks() {
             it.code
         );
         assert!(
-            !sh.item_dir(it).join(it.part_name()).exists(),
+            !sh.item_dir(it)
+                .join(part_name_of(&it.stem, &it.ext))
+                .exists(),
             "no .part left behind"
         );
     }
@@ -373,7 +387,7 @@ fn pause_then_resume_continues_from_partial_file() {
 
     let part = {
         let it = sh.lock().items[0].clone();
-        sh.item_dir(&it).join(it.part_name())
+        sh.item_dir(&it).join(part_name_of(&it.stem, &it.ext))
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
@@ -401,7 +415,7 @@ fn pause_then_resume_continues_from_partial_file() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("slow", 6_000_000)
     );
 }
@@ -437,7 +451,7 @@ fn real_style_page_iframe_token_title_and_referer() {
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(it.stem, "Judul Dari Token");
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("ifr111", 3_000_000)
     );
 }
@@ -482,6 +496,15 @@ fn hls_links_are_reported_instead_of_silently_failing() {
     assert!(
         dbg.join("eee555.html").exists(),
         "the page is saved for diagnosis"
+    );
+    // and the failure is written into the one log file
+    let log = dbg.join("failures.log");
+    assert!(log.exists(), "the failure log is written");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("eee555"), "{text}");
+    assert!(
+        text.contains("html: eee555.html"),
+        "the html file is named: {text}"
     );
 }
 
@@ -597,12 +620,15 @@ fn downloads_an_hls_stream_and_joins_the_parts() {
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(it.hls_total, 3, "three parts");
     assert_eq!(it.hls_done, 3);
-    let got = std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap();
+    let got = std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap();
     let mut want = expected("seg1", 100_000);
     want.extend(expected("seg2", 200_000));
     want.extend(expected("seg3", 150_000));
     assert_eq!(got, want, "the parts are joined in order");
-    assert!(!sh.item_dir(&it).join(it.part_name()).exists());
+    assert!(!sh
+        .item_dir(&it)
+        .join(part_name_of(&it.stem, &it.ext))
+        .exists());
 }
 
 /// A stream that was interrupted continues after the parts that are already on disk.
@@ -628,7 +654,7 @@ fn an_hls_stream_continues_where_it_stopped() {
 
     // the first part is already there (the app was closed in the middle)
     let it = sh.lock().items[0].clone();
-    let part = sh.item_dir(&it).join(it.part_name());
+    let part = sh.item_dir(&it).join(part_name_of(&it.stem, &it.ext));
     std::fs::create_dir_all(part.parent().unwrap()).unwrap();
     std::fs::write(&part, expected("seg1", 100_000)).unwrap();
     {
@@ -642,7 +668,7 @@ fn an_hls_stream_continues_where_it_stopped() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(it.hls_done, 3);
-    let got = std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap();
+    let got = std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap();
     let mut want = expected("seg1", 100_000);
     want.extend(expected("seg2", 200_000));
     want.extend(expected("seg3", 150_000));
@@ -680,7 +706,7 @@ fn downloads_a_fragmented_hls_stream() {
 
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
-    let got = std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap();
+    let got = std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap();
     let mut want = expected("init", 1_000);
     want.extend(expected("seg1", 100_000));
     want.extend(expected("seg2", 200_000));
@@ -762,7 +788,7 @@ fn real_site_downloads_a_stream() {
     println!("parts   : {}/{}", it.hls_done, it.hls_total);
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
 
-    let p = sh.item_dir(&it).join(it.file_name());
+    let p = sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext));
     let data = std::fs::read(&p).unwrap();
     println!("file    : {} ({} bytes)", p.display(), data.len());
     assert!(data.len() > 100_000, "the file is too small");
@@ -907,16 +933,113 @@ fn a_finished_file_is_not_downloaded_again() {
     let it = sh.lock().items[0].clone();
     let dir = sh.item_dir(&it);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(it.file_name()), vec![0u8; 3_000_000]).unwrap();
+    std::fs::write(
+        dir.join(file_name_of(&it.stem, &it.ext)),
+        vec![0u8; 3_000_000],
+    )
+    .unwrap();
 
     run_item(&sh, id);
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(
-        std::fs::metadata(dir.join(it.file_name())).unwrap().len(),
+        std::fs::metadata(dir.join(file_name_of(&it.stem, &it.ext)))
+            .unwrap()
+            .len(),
         3_000_000,
         "the file was not downloaded again"
     );
+}
+
+/// Two videos with the same title must never write into the same file.
+#[test]
+fn two_videos_with_the_same_name_get_different_files() {
+    let dir = tmp("samename");
+    let sh = shared(&dir);
+
+    // two different videos, the same title, in the same folder
+    sh.lock().add_item(
+        "aaa",
+        "https://filecoster.com/d/aaa",
+        "Same Title",
+        "",
+        None,
+        None,
+        "mp4",
+        None,
+        false,
+    );
+    sh.lock().add_item(
+        "bbb",
+        "https://filecoster.com/d/bbb",
+        "Same Title",
+        "",
+        None,
+        None,
+        "mp4",
+        None,
+        false,
+    );
+    let (a, b) = {
+        let st = sh.lock();
+        (st.items[0].clone(), st.items[1].clone())
+    };
+    let na = sh.unique_stem(&a);
+    let nb = sh.unique_stem(&b);
+    assert_ne!(na, nb, "the two videos need different names: {na} vs {nb}");
+    assert!(nb.ends_with("[bbb]"), "{nb}");
+
+    // and the file that is already on the disk is not overwritten either
+    let d = sh.item_dir(&a);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(file_name_of(&a.stem, &a.ext)), vec![0u8; 100]).unwrap();
+    let a2 = Item {
+        size: Some(999),
+        ..a.clone()
+    };
+    assert!(
+        sh.unique_stem(&a2).ends_with("[aaa]"),
+        "the other video is not overwritten"
+    );
+}
+
+/// Everything that fails is written into one log file.
+#[test]
+fn failures_are_written_to_one_log_file() {
+    let dir = tmp("faillog");
+    let sh = shared(&dir);
+    let dbg = sh.paths.debug_dir();
+    std::fs::create_dir_all(&dbg).unwrap();
+    std::fs::write(dbg.join("abc123.html"), "<html></html>").unwrap();
+    std::fs::write(dbg.join("abc123.1.html"), "<html></html>").unwrap();
+
+    log_failure(
+        &dbg,
+        "abc123",
+        "https://filecoster.com/d/abc123",
+        "the server was busy (HTTP 503)",
+        &sh.paths.debug_files("abc123"),
+    );
+    let text = std::fs::read_to_string(dbg.join("failures.log")).unwrap();
+    assert!(text.contains("abc123"), "{text}");
+    assert!(text.contains("the server was busy (HTTP 503)"), "{text}");
+    assert!(
+        text.contains("abc123.html"),
+        "the html files are named: {text}"
+    );
+    assert!(text.contains("abc123.1.html"), "{text}");
+    assert!(now_string().len() == 19, "the time is there: {text}");
+
+    // and a second failure goes into the same file
+    log_failure(
+        &dbg,
+        "zzz999",
+        "https://filecoster.com/d/zzz999",
+        "boom",
+        &[],
+    );
+    let text = std::fs::read_to_string(dbg.join("failures.log")).unwrap();
+    assert!(text.contains("abc123") && text.contains("zzz999"), "{text}");
 }
 
 /// The three ways a server can mess up a resume, and what the downloader has to do about it.
@@ -949,7 +1072,7 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
         (sh, it)
     };
     let write_part = |sh: &Arc<Shared>, it: &Item, bytes: &[u8]| {
-        let p = sh.item_dir(it).join(it.part_name());
+        let p = sh.item_dir(it).join(part_name_of(&it.stem, &it.ext));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, bytes).unwrap();
     };
@@ -961,7 +1084,7 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("rng200", 3_000_000),
         "the old bytes are not kept"
     );
@@ -973,11 +1096,13 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert!(
-        !sh.item_dir(&it).join(it.part_name()).exists(),
+        !sh.item_dir(&it)
+            .join(part_name_of(&it.stem, &it.ext))
+            .exists(),
         "the part was renamed"
     );
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("rng416", 3_000_000)
     );
 
@@ -988,7 +1113,7 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("rng416", 3_000_000),
         "the short part was deleted and the file downloaded again"
     );
@@ -1000,7 +1125,7 @@ fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let it = sh.lock().items[0].clone();
     assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
     assert_eq!(
-        std::fs::read(sh.item_dir(&it).join(it.file_name())).unwrap(),
+        std::fs::read(sh.item_dir(&it).join(file_name_of(&it.stem, &it.ext))).unwrap(),
         expected("rngbad", 3_000_000),
         "the mismatched part was deleted and the file downloaded again"
     );

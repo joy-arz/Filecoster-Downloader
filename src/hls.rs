@@ -389,8 +389,10 @@ pub fn attempt(
     } else {
         item.ext.clone()
     };
-    let part = dir.join(item.part_name_with(&ext));
-    let fin = dir.join(item.file_name_with(&ext));
+    // the name must be unique, so two videos with the same title never share a file
+    let stem = sh.unique_stem(item);
+    let part = dir.join(part_name_of(&stem, &ext));
+    let fin = dir.join(file_name_of(&stem, &ext));
     *part_out = Some(part.clone());
 
     // where do we continue? (the state may be newer than the copy we were given)

@@ -46,9 +46,9 @@ pub fn run(sh: Arc<Shared>, id: u64, stop: Arc<AtomicBool>) {
                             }
                         }
                         Ok(Outcome::Stopped) => it.status = ItemStatus::Queued,
-                        Err(e) => {
+                        Err(ref e) => {
                             it.status = ItemStatus::Failed;
-                            it.error = e;
+                            it.error = e.clone();
                         }
                     }
                 }
@@ -59,6 +59,20 @@ pub fn run(sh: Arc<Shared>, id: u64, stop: Arc<AtomicBool>) {
                     let _ = fs::remove_file(p);
                 }
             }
+        }
+    }
+    // one line in the failure log, with the html files of this video
+    if let Err(e) = &res {
+        let (code, page) = {
+            let st = sh.lock();
+            match st.items.iter().find(|i| i.id == id) {
+                Some(it) => (it.code.clone(), it.page_url.clone()),
+                None => (String::new(), String::new()),
+            }
+        };
+        if !code.is_empty() {
+            let html = sh.paths.debug_files(&code);
+            log_failure(&sh.paths.debug_dir(), &code, &page, e, &html);
         }
     }
     sh.touch();
@@ -82,6 +96,13 @@ fn download(
     };
     let dir = sh.item_dir(&item);
     fs::create_dir_all(&dir).map_err(|e| format!("can't create folder {}: {e}", dir.display()))?;
+
+    // the name of the file must not be used by another video
+    let stem = sh.unique_stem(&item);
+    if stem != item.stem {
+        item.stem = stem.clone();
+        sh.update(id, |it| it.stem = stem.clone());
+    }
 
     let mut attempt: u32 = 0;
     loop {
@@ -224,8 +245,10 @@ fn attempt_once(
         .direct_url
         .clone()
         .ok_or_else(|| Fail::Relink("no link".into()))?;
-    let part = dir.join(item.part_name());
-    let fin = dir.join(item.file_name());
+    // the name must be unique, so two videos with the same title never share a file
+    let stem = sh.unique_stem(item);
+    let part = dir.join(part_name_of(&stem, &item.ext));
+    let fin = dir.join(file_name_of(&stem, &item.ext));
     *part_out = Some(part.clone());
 
     // already there (e.g. finished on another computer before the queue was saved)

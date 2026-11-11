@@ -99,49 +99,46 @@ pub struct Item {
 }
 
 impl Item {
-    /// "video.mp4" – but not "video.mp4.mp4" when the title already ends with the extension
-    pub fn file_name(&self) -> String {
-        self.file_name_with(&self.ext)
-    }
-
-    pub fn file_name_with(&self, ext: &str) -> String {
-        let stem = self.with_right_ext(ext);
-        if has_ext(&stem, ext) {
-            stem
-        } else {
-            format!("{stem}.{ext}")
-        }
-    }
-
     /// the file that is being downloaded
     pub fn part_name(&self) -> String {
-        self.part_name_with(&self.ext)
+        part_name_of(&self.stem, &self.ext)
     }
+}
 
-    pub fn part_name_with(&self, ext: &str) -> String {
-        let stem = self.with_right_ext(ext);
-        if has_ext(&stem, ext) {
-            format!("{stem}.part")
-        } else {
-            format!("{stem}.{ext}.part")
+/// "video.mp4" – but not "video.mp4.mp4" when the title already ends with the extension
+pub fn file_name_of(stem: &str, ext: &str) -> String {
+    let stem = with_right_ext(stem, ext);
+    if has_ext(&stem, ext) {
+        stem
+    } else {
+        format!("{stem}.{ext}")
+    }
+}
+
+/// "video.mp4.part"
+pub fn part_name_of(stem: &str, ext: &str) -> String {
+    let stem = with_right_ext(stem, ext);
+    if has_ext(&stem, ext) {
+        format!("{stem}.part")
+    } else {
+        format!("{stem}.{ext}.part")
+    }
+}
+
+/// A title that ends in another video extension ("video.mp4") is saved with the extension
+/// the file really has ("video.ts").
+fn with_right_ext(stem: &str, ext: &str) -> String {
+    let lower = stem.to_ascii_lowercase();
+    let want = ext.to_ascii_lowercase();
+    for e in VIDEO_EXTS {
+        if *e == want {
+            continue;
+        }
+        if lower.ends_with(&format!(".{e}")) {
+            return stem[..stem.len() - e.len() - 1].to_string();
         }
     }
-
-    /// A title that ends in another video extension ("video.mp4") is saved with the extension
-    /// the file really has ("video.ts").
-    fn with_right_ext(&self, ext: &str) -> String {
-        let lower = self.stem.to_ascii_lowercase();
-        let want = ext.to_ascii_lowercase();
-        for e in VIDEO_EXTS {
-            if *e == want {
-                continue;
-            }
-            if lower.ends_with(&format!(".{e}")) {
-                return self.stem[..self.stem.len() - e.len() - 1].to_string();
-            }
-        }
-        self.stem.clone()
-    }
+    stem.to_string()
 }
 
 /// Does the name already end with this extension?
@@ -394,6 +391,77 @@ impl Paths {
     pub fn lock_file(&self) -> PathBuf {
         self.data_dir.join("app.lock")
     }
+    /// one file with everything that failed
+    pub fn fail_log(&self) -> PathBuf {
+        self.debug_dir().join("failures.log")
+    }
+    /// the html files in the debug folder that belong to this code
+    pub fn debug_files(&self, code: &str) -> Vec<String> {
+        let dir = self.debug_dir();
+        let mut out: Vec<String> = Vec::new();
+        if let Ok(rd) = fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with(code) && name.ends_with(".html") {
+                    out.push(name);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+}
+
+/// Writes one failure into `debug/failures.log` and says which html files belong to it.
+pub fn log_failure(debug_dir: &Path, code: &str, page_url: &str, error: &str, html: &[String]) {
+    if fs::create_dir_all(debug_dir).is_err() {
+        return;
+    }
+    let mut s = format!(
+        "{}  {}  {}\n    error: {}\n",
+        now_string(),
+        code,
+        page_url,
+        error.replace('\n', " ")
+    );
+    if !html.is_empty() {
+        s.push_str(&format!("    html: {}\n", html.join(", ")));
+    }
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(debug_dir.join("failures.log"))
+    {
+        use std::io::Write;
+        let _ = f.write_all(s.as_bytes());
+    }
+}
+
+/// "2026-11-11 15:14:32" in the local time
+pub fn now_string() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
+}
+
+/// The date of a day number since 1970-01-01 (the civil calendar, proleptic Gregorian).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 fn writable(dir: &Path) -> bool {
@@ -604,6 +672,31 @@ impl Shared {
                     .unwrap_or(0)
             };
         }
+    }
+
+    /// The name of this video, made unique: when another video (or a file that is already on
+    /// the disk) uses it, the code is added. Two videos with the same title must never write
+    /// into the same file.
+    pub fn unique_stem(&self, it: &Item) -> String {
+        let taken = {
+            let st = self.lock();
+            st.items.iter().any(|o| {
+                o.id != it.id && o.subdir == it.subdir && o.stem.eq_ignore_ascii_case(&it.stem)
+            })
+        };
+        if taken {
+            return format!("{} [{}]", it.stem, it.code);
+        }
+        // the file is on the disk but is a different video (another size): do not overwrite it
+        if let Some(sz) = it.size {
+            let f = self
+                .subdir_dir(&it.subdir)
+                .join(file_name_of(&it.stem, &it.ext));
+            if fs::metadata(&f).map(|m| m.len() != sz).unwrap_or(false) {
+                return format!("{} [{}]", it.stem, it.code);
+            }
+        }
+        it.stem.clone()
     }
 
     pub fn save(&self) {

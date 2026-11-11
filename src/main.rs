@@ -586,6 +586,14 @@ impl eframe::App for App {
                             .weak(),
                         );
                     }
+                    ui.label(
+                        RichText::new(format!(
+                            "Everything that fails is written to {}",
+                            shared.paths.fail_log().display()
+                        ))
+                        .small()
+                        .weak(),
+                    );
                     let where_ = shared.paths.data_dir.display().to_string();
                     ui.label(
                         RichText::new(format!(
