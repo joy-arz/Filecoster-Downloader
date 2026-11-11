@@ -343,7 +343,7 @@ impl App {
             unconverted: st
                 .items
                 .iter()
-                .filter(|i| i.status == ItemStatus::Done && i.ext == "ts")
+                .filter(|i| i.status == ItemStatus::Done && !i.converted)
                 .count(),
             converting: st.items.iter().filter(|i| i.converting).count(),
         }

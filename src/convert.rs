@@ -317,7 +317,11 @@ pub fn convert_item(sh: &Shared, id: u64, ffmpeg: &str, stop: &AtomicBool) -> Re
     });
     match res {
         Ok(()) => {
-            let _ = std::fs::remove_file(&input); // the old, bigger file goes
+            // the old, bigger file goes – but only when it is a different file than the new
+            // one (an .mp4 that came from the server is compressed in place)
+            if input != output {
+                let _ = std::fs::remove_file(&input);
+            }
             let new_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
             sh.update(id, |it| {
                 if it.ext != "mp4" {

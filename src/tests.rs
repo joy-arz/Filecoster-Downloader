@@ -1116,6 +1116,73 @@ fn converts_a_stream_into_a_smaller_mp4() {
     assert_eq!(it.size, Some(after), "the size is up to date");
 }
 
+/// An .mp4 that came straight from the server is compressed in place: the file must survive.
+#[test]
+fn compresses_an_mp4_in_place_without_losing_it() {
+    let dir = tmp("inplace");
+    let sh = shared(&dir);
+    let Some(ffmpeg) = crate::convert::find_ffmpeg(&sh) else {
+        eprintln!("ffmpeg is not installed, skipping");
+        return;
+    };
+    // a small mp4
+    let dest = sh.subdir_dir("");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mp4 = dest.join("Movie.mp4");
+    let ok = std::process::Command::new(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=10:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&mp4)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("ffmpeg cannot make a test video, skipping");
+        return;
+    }
+    let before = std::fs::metadata(&mp4).unwrap().len();
+
+    sh.lock().add_item(
+        "inplace",
+        "https://filecoster.com/d/inplace",
+        "Movie",
+        "",
+        None,
+        Some(before),
+        "mp4",
+        None,
+        false,
+    );
+    let id = sh.lock().items[0].id;
+    {
+        let mut st = sh.lock();
+        st.items[0].status = ItemStatus::Done;
+    }
+
+    crate::convert::convert_item(&sh, id, &ffmpeg, &AtomicBool::new(false)).expect("converted");
+
+    // the file is still there (and it was rewritten)
+    assert!(mp4.is_file(), "the video was not deleted!");
+    let after = std::fs::metadata(&mp4).unwrap().len();
+    assert!(after > 0);
+    let it = sh.lock().items[0].clone();
+    assert_eq!(it.ext, "mp4");
+    assert!(it.converted);
+    assert_eq!(it.size, Some(after));
+}
+
 /// The duplicate check finds the videos that were downloaded twice and removes the extra one.
 #[test]
 fn finds_and_removes_the_downloaded_duplicates() {
