@@ -1294,6 +1294,41 @@ fn a_folder_in_the_reference_list_is_remembered() {
     assert!(st.add_link(LinkKind::Single, "xyz", "https://filecoster.com/d/xyz"));
 }
 
+/// Every setting has to be saved, also the new ones.
+#[test]
+fn every_setting_is_saved() {
+    let s = Settings {
+        max_active: 7,
+        retries: 11,
+        auto_resume: false,
+        group_folders: false,
+        convert_hls: true,
+        video_codec: 3,
+        quality: 42,
+        ffmpeg: "/usr/local/bin/ffmpeg".into(),
+        ..Settings::default()
+    };
+
+    let mut st = State::default();
+    st.apply_settings(s.clone());
+    assert_eq!(st.settings.max_active, 7);
+    assert_eq!(st.settings.retries, 11);
+    assert!(!st.settings.auto_resume);
+    assert!(!st.settings.group_folders);
+    assert!(st.settings.convert_hls);
+    assert_eq!(st.settings.video_codec, 3);
+    assert_eq!(st.settings.quality, 42);
+    assert_eq!(st.settings.ffmpeg, "/usr/local/bin/ffmpeg");
+
+    // and they survive a save and a load
+    let text = serde_json::to_string(&st).unwrap();
+    let back: State = serde_json::from_str(&text).unwrap();
+    assert!(back.settings.convert_hls);
+    assert_eq!(back.settings.video_codec, 3);
+    assert_eq!(back.settings.quality, 42);
+    assert_eq!(back.settings.ffmpeg, "/usr/local/bin/ffmpeg");
+}
+
 #[test]
 fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let agent = resolver::agent();

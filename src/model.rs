@@ -260,6 +260,12 @@ impl State {
         st
     }
 
+    /// Saves the settings. All of them are written back, so that a new option is never
+    /// forgotten here.
+    pub fn apply_settings(&mut self, s: Settings) {
+        self.settings = s;
+    }
+
     /// Do we already have this video? (the reference .txt)
     pub fn is_known(&self, code: &str) -> bool {
         self.used.contains(code)

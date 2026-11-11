@@ -743,6 +743,7 @@ impl eframe::App for App {
                             .clicked()
                         {
                             s.video_codec = 0;
+                            changed = true;
                         }
                         for (name, v) in &encs[1..] {
                             let label = if cfg!(target_os = "macos") {
@@ -752,6 +753,7 @@ impl eframe::App for App {
                             };
                             if ui.selectable_value(&mut picked, *name, label).clicked() {
                                 s.video_codec = *v;
+                                changed = true;
                             }
                         }
                         changed |= ui
@@ -1227,11 +1229,9 @@ impl eframe::App for App {
 
         // ───── apply what the user did this frame ─────
         if let Some(s) = settings_edit {
+            // the whole settings are written back, so that new options are never forgotten
             let mut st = shared.lock();
-            st.settings.max_active = s.max_active;
-            st.settings.retries = s.retries;
-            st.settings.auto_resume = s.auto_resume;
-            st.settings.group_folders = s.group_folders;
+            st.apply_settings(s);
             drop(st);
             shared.touch();
         }
