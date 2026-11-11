@@ -619,3 +619,13 @@ to check that the whole chain still works. To look at one video on the real site
 ```
 CODE=abc123 cargo test -- --ignored real_site_debug -- --nocapture
 ```
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=joy-arz%2Ffilecoster-downloader&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=joy-arz/filecoster-downloader&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=joy-arz/filecoster-downloader&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=joy-arz/filecoster-downloader&type=date&legend=top-left" />
+ </picture>
+</a>
