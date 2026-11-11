@@ -321,19 +321,25 @@ impl App {
         }
     }
 
-    fn add_links(&mut self, text: &str) -> usize {
-        let mut n = 0;
+    /// Adds the links of a text. Returns how many were added and how many were skipped
+    /// (we already have them).
+    fn add_links(&mut self, text: &str) -> (usize, usize) {
+        let mut added = 0;
+        let mut skipped = 0;
         {
             let mut st = self.shared.lock();
             for p in resolver::parse_links(text) {
                 if st.add_link(p.kind, &p.code, &p.url) {
-                    n += 1;
+                    added += 1;
+                } else {
+                    // already in the list, or we already have the video
+                    skipped += 1;
                 }
             }
         }
         self.shared.touch();
         fetch::spawn_fetchers(&self.shared);
-        n
+        (added, skipped)
     }
 
     fn pick_dest(&mut self) {
@@ -484,6 +490,9 @@ impl eframe::App for App {
         let mut fetch_pending = false;
         let mut pick_dest = false;
         let mut import_txt = false;
+        let mut reference_txt = false;
+        let mut export_links = false;
+        let mut forget_used = false;
         let mut paste_clipboard = false;
         let mut open_dir: Option<String> = None;
         let mut settings_edit: Option<Settings> = None;
@@ -556,6 +565,18 @@ impl eframe::App for App {
                         settings_edit = Some(s);
                     }
                     ui.add_space(2.0);
+                    let used = shared.lock().used.len();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!(
+                            "{used} video(s) are on the reference list and are never downloaded again."
+                        ));
+                        if ui.button("Export my links...").clicked() {
+                            export_links = true;
+                        }
+                        if used > 0 && ui.button("Forget the reference list").clicked() {
+                            forget_used = true;
+                        }
+                    });
                     let where_ = shared.paths.data_dir.display().to_string();
                     ui.label(
                         RichText::new(if shared.paths.portable {
@@ -605,6 +626,9 @@ impl eframe::App for App {
                 }
                 if ui.button("Import .txt...").clicked() {
                     import_txt = true;
+                }
+                if ui.button("Reference .txt...").clicked() {
+                    reference_txt = true;
                 }
                 if snap.new_links > 0 && ui.button(format!("Fetch pending ({})", snap.new_links)).clicked() {
                     fetch_pending = true;
@@ -944,12 +968,19 @@ impl eframe::App for App {
             {
                 match fs::read_to_string(&p) {
                     Ok(text) => {
-                        let n = self.add_links(&text);
+                        let (n, skipped) = self.add_links(&text);
                         let name = p
                             .file_name()
                             .map(|f| f.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "the file".into());
-                        self.notice = Some(format!("{n} link(s) added from {name}."));
+                        self.notice = Some(format!(
+                            "{n} link(s) added from {name}{}.",
+                            if skipped > 0 {
+                                format!(", {skipped} skipped (already downloaded)")
+                            } else {
+                                String::new()
+                            }
+                        ));
                     }
                     Err(e) => {
                         self.notice = Some(format!("Could not read {}: {e}", p.display()));
@@ -957,9 +988,97 @@ impl eframe::App for App {
                 }
             }
         }
+        if reference_txt {
+            // the links of the videos we already have: they are never downloaded again
+            if let Some(p) = rfd::FileDialog::new()
+                .add_filter("Text file", &["txt", "csv", "md", "url", "list", "log"])
+                .add_filter("All files", &["*"])
+                .pick_file()
+            {
+                match fs::read_to_string(&p) {
+                    Ok(text) => {
+                        let codes: Vec<String> = resolver::parse_links(&text)
+                            .into_iter()
+                            .map(|x| x.code)
+                            .collect();
+                        let n = self.shared.lock().add_used(codes);
+                        // the videos we already have do not have to be in the queue
+                        let removed: Vec<Item> = {
+                            let mut st = self.shared.lock();
+                            let used = st.used.clone();
+                            let mut removed = Vec::new();
+                            st.items.retain(|i| {
+                                if i.status != ItemStatus::Done && used.contains(&i.code) {
+                                    removed.push(i.clone());
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                            removed
+                        };
+                        for it in &removed {
+                            let _ = fs::remove_file(self.shared.item_dir(it).join(it.part_name()));
+                        }
+                        self.shared.touch();
+                        self.notice = Some(format!(
+                            "{n} video(s) added to the reference list, {} taken out of the queue. They are skipped from now on.",
+                            removed.len()
+                        ));
+                    }
+                    Err(e) => {
+                        self.notice = Some(format!("Could not read {}: {e}", p.display()));
+                    }
+                }
+            }
+        }
+        if export_links {
+            // a .txt with the links of everything we already downloaded: it can be uploaded
+            // again later as the reference list
+            let done: Vec<String> = {
+                let st = self.shared.lock();
+                st.items
+                    .iter()
+                    .filter(|i| i.status == ItemStatus::Done)
+                    .map(|i| i.page_url.clone())
+                    .collect()
+            };
+            if done.is_empty() {
+                self.notice = Some("There is nothing downloaded yet to export.".into());
+            } else if let Some(p) = rfd::FileDialog::new()
+                .set_file_name("filecoster-links.txt")
+                .add_filter("Text file", &["txt"])
+                .save_file()
+            {
+                let text = done.join("\n");
+                match fs::write(&p, text) {
+                    Ok(()) => {
+                        self.notice = Some(format!(
+                            "{} link(s) written to {}.",
+                            done.len(),
+                            p.display()
+                        ))
+                    }
+                    Err(e) => self.notice = Some(format!("Could not write {}: {e}", p.display())),
+                }
+            }
+        }
+        if forget_used {
+            let n = self.shared.lock().used.len();
+            self.shared.lock().used.clear();
+            self.shared.touch();
+            self.notice = Some(format!("{n} video(s) removed from the reference list."));
+        }
         if let Some(t) = add_text {
-            let n = self.add_links(&t);
-            self.notice = Some(format!("{n} link(s) added."));
+            let (n, skipped) = self.add_links(&t);
+            self.notice = Some(format!(
+                "{n} link(s) added{}.",
+                if skipped > 0 {
+                    format!(", {skipped} skipped (already downloaded)")
+                } else {
+                    String::new()
+                }
+            ));
         }
         if let Some(d) = open_dir {
             let dir = shared.subdir_dir(&d);

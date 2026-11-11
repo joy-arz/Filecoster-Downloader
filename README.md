@@ -16,7 +16,8 @@ The app works in two phases, so nothing is downloaded before you say so.
    - `/f/…` is a folder: every page and every sub-folder is crawled, and its videos are added
      with their title and page URL only — they are looked up when you download them
    - **Paste from clipboard** puts whatever is on the clipboard into the box, **Import .txt…**
-     reads a text file (any format, any number of links per line)
+     reads a text file (any format, any number of links per line), **Reference .txt…** marks the
+     videos of a text file as "already have them"
    - The queue is saved as JSON, so you can fetch now and download later, here or on another
      computer that has the same drive
 2. **Download** — press **Download all** (or **Queue** on a single row). Everything is
@@ -29,6 +30,26 @@ downloaded twice.
 
 The row shows what is going on: progress, speed, and `retry 2/6: server busy (HTTP 503)` while
 waiting. Click the folder name under the title to open it.
+
+## Nothing is downloaded twice
+
+The code of a video is what identifies it, so the same video is only ever downloaded once:
+
+- `/d/…`, `/s/` and `/e/` of the same code are one video (and one queue entry)
+- the same video in two different folders is still one queue entry
+- the codes are not case sensitive: `/D/ABC` and `/d/abc` are the same
+- a file that is already on the disk with the right size is not downloaded again
+- two videos with the same name in the same folder get ` [code]` added
+
+### The reference list
+
+**Reference .txt…** loads a list of the links you already have. Those videos are then never
+fetched or downloaded again, no matter which folder or link they turn up in — the app tells you
+how many it skipped.
+
+**Export my links…** (in *Settings*) writes a `.txt` with the links of everything you already
+downloaded. That file can be used as the reference list on another computer, so the two do not
+download the same videos twice. Both lists are saved in `filecoster-data/state.json`.
 
 ## Portable on an external SSD
 

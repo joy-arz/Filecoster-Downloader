@@ -68,6 +68,9 @@ fn process(
 ) -> Result<String, String> {
     match kind {
         LinkKind::Single => {
+            if sh.lock().is_known(code) {
+                return Ok("already have this one".into());
+            }
             let m = resolver::resolve_media(&sh.agent, url, &sh.paths.debug_dir(), code)
                 .map_err(|e| e.msg)?;
             let added = sh.lock().add_item(
@@ -94,7 +97,12 @@ fn process(
             }
             let mut st = sh.lock();
             let mut n = 0;
+            let mut known = 0;
             for f in files {
+                if st.is_known(&f.code) {
+                    known += 1; // we already have this one
+                    continue;
+                }
                 if st.add_item(
                     &f.code,
                     &f.page_url,
@@ -110,6 +118,9 @@ fn process(
                 }
             }
             let mut note = format!("{n} new video(s)");
+            if known > 0 {
+                note.push_str(&format!(", {known} skipped (already downloaded)"));
+            }
             if !warnings.is_empty() {
                 note.push_str(&format!(
                     ", {} page(s) couldn't be read: use Retry to fill the gaps",

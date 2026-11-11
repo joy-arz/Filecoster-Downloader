@@ -56,7 +56,8 @@ pub fn parse_links(text: &str) -> Vec<Parsed> {
     let mut out = Vec::new();
     for c in re.captures_iter(text) {
         let seg = c[1].to_ascii_lowercase();
-        let code = c[2].to_string();
+        // the codes on the site are lower case: /D/ABC and /d/abc are the same video
+        let code = c[2].to_ascii_lowercase();
         if !seen.insert((seg.clone(), code.clone())) {
             continue;
         }

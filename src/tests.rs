@@ -770,6 +770,155 @@ fn real_site_downloads_a_stream() {
     let _ = text;
 }
 
+/// The same video must never be downloaded twice, no matter how it turns up.
+#[test]
+fn the_same_video_is_only_downloaded_once() {
+    let mut st = State::default();
+
+    // the same code from /d/, /s/ and /e/
+    assert!(st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/d/aaa"));
+    assert!(!st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/s/aaa"));
+    assert!(!st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/e/aaa"));
+    assert_eq!(st.links.len(), 1);
+
+    // the same video in two different folders
+    assert!(st.add_item(
+        "bbb",
+        "https://filecoster.com/d/bbb",
+        "One",
+        "Folder A",
+        None,
+        None,
+        "mp4",
+        None,
+        false
+    ));
+    assert!(!st.add_item(
+        "bbb",
+        "https://filecoster.com/d/bbb",
+        "One",
+        "Folder B",
+        None,
+        None,
+        "mp4",
+        None,
+        false
+    ));
+    assert_eq!(st.items.len(), 1, "the video is in the queue once");
+
+    // a different video with the same name is still added
+    assert!(st.add_item(
+        "ccc",
+        "https://filecoster.com/d/ccc",
+        "One",
+        "Folder B",
+        None,
+        None,
+        "mp4",
+        None,
+        false
+    ));
+    assert_eq!(st.items.len(), 2);
+}
+
+/// The reference .txt: the videos we already have are never downloaded again.
+#[test]
+fn the_reference_list_skips_what_we_already_have() {
+    let mut st = State::default();
+    let n = st.add_used(["aaa".to_string(), "BBB".to_string(), "ccc".to_string()]);
+    assert_eq!(n, 3);
+    assert!(st.is_known("aaa"));
+    assert!(st.is_known("bbb"), "the codes are lower case");
+    assert!(!st.is_known("ddd"));
+
+    // a link we already have is not even added
+    assert!(!st.add_link(LinkKind::Single, "aaa", "https://filecoster.com/d/aaa"));
+    assert!(st.links.is_empty());
+
+    // and it does not go into the queue either
+    assert!(!st.add_item(
+        "bbb",
+        "https://filecoster.com/d/bbb",
+        "Old",
+        "Folder",
+        None,
+        None,
+        "mp4",
+        None,
+        false
+    ));
+    assert!(st.items.is_empty());
+
+    // a new one still works
+    assert!(st.add_link(LinkKind::Single, "zzz", "https://filecoster.com/d/zzz"));
+    assert!(st.add_item(
+        "yyy",
+        "https://filecoster.com/d/yyy",
+        "New",
+        "Folder",
+        None,
+        None,
+        "mp4",
+        None,
+        false
+    ));
+    assert_eq!(st.items.len(), 1);
+
+    // the same file twice in the list does not count twice
+    assert_eq!(st.add_used(["aaa".to_string()]), 0);
+}
+
+/// The codes of the site are lower case: /D/ABC and /d/abc are the same video.
+#[test]
+fn the_codes_are_not_case_sensitive() {
+    let p = resolver::parse_links("https://filecoster.com/D/AbC https://filecoster.com/d/abc");
+    assert_eq!(p.len(), 1, "the same video, written two ways");
+    assert_eq!(p[0].code, "abc");
+    assert_eq!(p[0].url, "https://filecoster.com/d/abc");
+}
+
+/// A video that is already on the disk is not downloaded again.
+#[test]
+fn a_finished_file_is_not_downloaded_again() {
+    let dir = tmp("already");
+    let sh = shared(&dir);
+    let code = "aaa111";
+    let url = format!("{}/d/{code}", mock());
+    let agent = resolver::agent();
+    let dbg = tmp("dbg8");
+    let m = resolver::resolve_media(&agent, &url, &dbg, code)
+        .ok()
+        .unwrap();
+
+    sh.lock().add_item(
+        code,
+        &url,
+        code,
+        "",
+        Some(m.probe.url.clone()),
+        m.probe.size,
+        &m.probe.ext,
+        Some(m.probe.referer.clone()),
+        m.probe.hls,
+    );
+    let id = sh.lock().items[0].id;
+
+    // the file is already there, with the right size
+    let it = sh.lock().items[0].clone();
+    let dir = sh.item_dir(&it);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(it.file_name()), vec![0u8; 3_000_000]).unwrap();
+
+    run_item(&sh, id);
+    let it = sh.lock().items[0].clone();
+    assert_eq!(it.status, ItemStatus::Done, "{}", it.error);
+    assert_eq!(
+        std::fs::metadata(dir.join(it.file_name())).unwrap().len(),
+        3_000_000,
+        "the file was not downloaded again"
+    );
+}
+
 /// The three ways a server can mess up a resume, and what the downloader has to do about it.
 #[test]
 fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {

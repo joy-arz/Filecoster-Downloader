@@ -1,5 +1,6 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -188,6 +189,9 @@ pub struct State {
     pub links: Vec<Link>,
     pub items: Vec<Item>,
     pub settings: Settings,
+    /// the codes of the videos we already have (from the reference .txt): they are never
+    /// downloaded again, no matter which folder they turn up in
+    pub used: BTreeSet<String>,
 }
 
 impl State {
@@ -220,14 +224,42 @@ impl State {
                 l.status = LinkStatus::New;
             }
         }
+        // the codes are lower case now: fix the ones from an older version
+        for it in &mut st.items {
+            it.code = it.code.to_ascii_lowercase();
+        }
+        for l in &mut st.links {
+            l.code = l.code.to_ascii_lowercase();
+        }
         st.settings.max_active = st.settings.max_active.clamp(1, 8);
         st.settings.retries = st.settings.retries.min(20);
         st
     }
 
-    /// Returns false if this link is already in the list (an errored one is re-armed instead).
+    /// Do we already have this video? (the reference .txt)
+    pub fn is_known(&self, code: &str) -> bool {
+        self.used.contains(code)
+    }
+
+    /// Remembers the videos we already have. Returns how many were new.
+    pub fn add_used(&mut self, codes: impl IntoIterator<Item = String>) -> usize {
+        let mut n = 0;
+        for c in codes {
+            let c = c.trim().to_ascii_lowercase();
+            if !c.is_empty() && self.used.insert(c) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Returns false if this link is already in the list (an errored one is re-armed instead),
+    /// or if we already have the video (reference list).
     /// /d/, /s/ and /e/ with the same code are the same video, so they count as one.
     pub fn add_link(&mut self, kind: LinkKind, code: &str, url: &str) -> bool {
+        if self.is_known(code) {
+            return false; // we already have this one
+        }
         if let Some(l) = self.links.iter_mut().find(|l| {
             l.code == code
                 && (l.kind == kind || (l.kind == LinkKind::Single && kind == LinkKind::Single))
@@ -250,7 +282,9 @@ impl State {
         true
     }
 
-    /// Returns false if a video with this code is already in the list.
+    /// Returns false if a video with this code is already in the list, or if we already have it.
+    /// The code is what identifies a video, so the same one is never downloaded twice, not even
+    /// when it turns up in another folder or as /s/ or /e/ instead of /d/.
     #[allow(clippy::too_many_arguments)]
     pub fn add_item(
         &mut self,
@@ -264,8 +298,11 @@ impl State {
         referer: Option<String>,
         hls: bool,
     ) -> bool {
+        if self.is_known(code) {
+            return false; // we already have this one
+        }
         if self.items.iter().any(|i| i.code == code) {
-            return false;
+            return false; // it is already in the queue
         }
         let mut stem = sanitize(if title.trim().is_empty() { code } else { title });
         if self
