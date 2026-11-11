@@ -79,9 +79,9 @@ pub fn run(sh: Arc<Shared>, id: u64, stop: Arc<AtomicBool>) {
 }
 
 fn download(
-    sh: &Shared,
+    sh: &Arc<Shared>,
     id: u64,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     part_out: &mut Option<PathBuf>,
 ) -> Result<Outcome, String> {
     let (mut item, retries) = {
@@ -233,10 +233,10 @@ fn finalize(part: &Path, fin: &Path) -> Result<(), Fail> {
 }
 
 fn attempt_once(
-    sh: &Shared,
+    sh: &Arc<Shared>,
     id: u64,
     item: &Item,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     dir: &Path,
     part_out: &mut Option<PathBuf>,
     progressed: &mut bool,

@@ -133,6 +133,11 @@ impl Encoder {
             _ => Encoder::H264Software,
         }
     }
+    /// the graphics card encoders only exist on macOS
+    pub fn needs_mac(&self) -> bool {
+        matches!(self, Encoder::H264Hardware | Encoder::H265Hardware)
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Encoder::H264Software => "H.264 (software) - plays everywhere",
@@ -154,6 +159,16 @@ fn video_args(enc: Encoder, quality: u32) -> Vec<String> {
     let q = quality.clamp(1, 100);
     let mut v: Vec<String> = Vec::new();
     let mut push = |s: &str| v.push(s.to_string());
+    // the software encoder takes every core by itself, so it only gets half of them:
+    // the downloads keep going at the same time
+    if !enc.needs_mac() {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let half = (cores / 2).max(2);
+        push("-threads");
+        push(&half.to_string());
+    }
     match enc {
         Encoder::H264Software => {
             push("-c:v");

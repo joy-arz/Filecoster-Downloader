@@ -710,8 +710,22 @@ impl eframe::App for App {
                         )
                         .changed();
                     changed |= ui
-                        .checkbox(&mut s.convert_hls, "Compress the finished streams into .mp4 (ffmpeg)")
+                        .checkbox(
+                            &mut s.convert_hls,
+                            "Compress the finished streams into .mp4 (ffmpeg, in the background)",
+                        )
                         .changed();
+                    if !s.convert_hls {
+                        ui.label(
+                            RichText::new(
+                                "Off: the streams are saved as .ts files. They are bigger, but the \
+                                 download is done much faster. You can convert them later with \
+                                 \"Convert unconverted\".",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
                     if s.convert_hls {
                         let encs: Vec<(&str, u8)> = vec![
                             (crate::convert::Encoder::H264Software.name(), 0),

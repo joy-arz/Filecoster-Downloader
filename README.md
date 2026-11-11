@@ -491,7 +491,7 @@ First launch on macOS may need right-click > Open (unsigned app).
 | Automatic retries per video | 6 | How often a failing download is tried again |
 | Continue unfinished downloads when the app opens | on | Picks up the queue that was still running |
 | Put videos from a folder link into their own sub-folder | on | Videos of `/f/…` links go into a sub-folder named after it (nested for sub-folders) |
-| Compress the finished streams into .mp4 | on | Re-encodes every stream with H.265 and deletes the `.ts` (needs ffmpeg) |
+| Compress the finished streams into .mp4 | off | Re-encodes every stream with H.265 and deletes the `.ts` (needs ffmpeg). Off = the streams stay as `.ts` files and the download is fast |
 | Video codec for the compression | H.265 | H.264 or H.265, with the graphics card or without |
 | Quality (higher is better) | 60 | 1–100; 60 is a good size for the quality |
 
@@ -553,8 +553,11 @@ downloaded it is re-encoded and saved as an ordinary `.mp4`, and the `.ts` is de
 needs a player that knows it (every Mac since 2017, Windows 10/11, Android 8, and every browser
 since 2023). The graphics card encoders are much faster but a little bigger.
 
-- **Compress the finished streams into .mp4** (in *Settings*) does this automatically after every
-  download
+- **Compress the finished streams into .mp4** (in *Settings*, **off by default**) does this
+  automatically after every download. It runs in the background, so the downloads are not held
+  up, and only one conversion runs at a time so it does not eat the whole processor.
+  **Off** means the streams stay as they are: the `.ts` files are bigger, but the download is
+  done much faster
 - **Convert unconverted (N)** does the same for the videos that were downloaded earlier — and
   also for the `.mp4` files that came straight from the server and were never compressed
 - the old, bigger file is deleted when the new one is ready

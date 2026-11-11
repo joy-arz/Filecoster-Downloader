@@ -17,6 +17,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use url::Url;
 
 type Aes128Cbc = cbc::Decryptor<aes::Aes128>;
@@ -348,10 +349,10 @@ fn fetch_part(
 
 /// Downloads a whole HLS stream into the `.part` file of the item.
 pub fn attempt(
-    sh: &Shared,
+    sh: &Arc<Shared>,
     id: u64,
     item: &Item,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     dir: &Path,
     part_out: &mut Option<PathBuf>,
     progressed: &mut bool,
@@ -503,15 +504,16 @@ pub fn attempt(
         it.downloaded = written;
         it.size = Some(written);
     });
-    // turn it into an ordinary .mp4 when the user wants that (the .ts is deleted afterwards)
-    // while the big batch is running the new downloads keep their .ts, so the downloads are
-    // not held up by the conversion
-    if sh.lock().settings.convert_hls
-        && item.ext == "ts"
-        && !sh.batch_running.load(Ordering::SeqCst)
-    {
+    // Turn it into an ordinary .mp4 when the user wants that (the .ts is deleted afterwards).
+    // It runs in the background: encoding takes far longer than the download, and the queue
+    // should not wait for it.
+    if sh.lock().settings.convert_hls && item.ext == "ts" {
         if let Some(ffmpeg) = crate::convert::find_ffmpeg(sh) {
-            let _ = crate::convert::convert_item(sh, id, &ffmpeg, stop);
+            let sh2 = sh.clone();
+            let stop2 = stop.clone();
+            std::thread::spawn(move || {
+                let _ = crate::convert::convert_item(&sh2, id, &ffmpeg, &stop2);
+            });
         }
     }
     Ok(Outcome::Done)
