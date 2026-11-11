@@ -466,10 +466,7 @@ fn probe(agent: &ureq::Agent, url: &str, referer: &str) -> Probed {
 /// Looks at a full .m3u8 playlist: how long is it and is it a fragmented mp4?
 /// Returns the error text when the server refused.
 fn probe_hls(agent: &ureq::Agent, url: &str, referer: &str) -> Result<Option<Probe>, String> {
-    let resp = match send(agent.get(url).set("Referer", referer)) {
-        Ok(r) => r,
-        Err(e) => return Err(e),
-    };
+    let resp = send(agent.get(url).set("Referer", referer))?;
     let status = resp.status();
     if !(200..300).contains(&status) {
         return Err(format!("HTTP {status}"));
