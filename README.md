@@ -48,6 +48,9 @@ you never changed it. Videos of a folder link go into a sub-folder named after i
 - **Retry failed** tries the failed ones again
 - **Clear finished** takes the finished videos out of the list (the files stay where they are)
 - **Reference .txt…** marks videos as "I already have them" so they are never fetched again
+  (folders in that file are looked through, so their videos are skipped too)
+- **Check duplicates** removes the videos that were downloaded twice
+- **Convert unconverted (N)** compresses the finished videos into small `.mp4` files
 - **Export my links…** (in *Settings*) writes a `.txt` with everything you downloaded
 
 **The filters** (All, Ready, In queue, Done, Failed) sit under the buttons, and the bar at the
@@ -97,6 +100,13 @@ The code of a video is what identifies it, so the same video is only ever downlo
 **Reference .txt…** loads a list of the links you already have. Those videos are then never
 fetched or downloaded again, no matter which folder or link they turn up in — the app tells you
 how many it skipped, and the ones still in the queue are taken out of it.
+
+It works in both directions:
+
+- a `/d/…`, `/s/…` or `/e/…` link in the reference list: that video is skipped, also when it
+  turns up inside a folder
+- a `/f/…` link in the reference list: the whole folder is skipped — and the app looks inside
+  it once, so that the single links of that folder are skipped as well
 
 **Export my links…** (in *Settings*) writes a `.txt` with the links of everything you already
 downloaded. That file can be used as the reference list on another computer, so the two do not
@@ -481,6 +491,9 @@ First launch on macOS may need right-click > Open (unsigned app).
 | Automatic retries per video | 6 | How often a failing download is tried again |
 | Continue unfinished downloads when the app opens | on | Picks up the queue that was still running |
 | Put videos from a folder link into their own sub-folder | on | Videos of `/f/…` links go into a sub-folder named after it (nested for sub-folders) |
+| Compress the finished streams into .mp4 | on | Re-encodes every stream with H.265 and deletes the `.ts` (needs ffmpeg) |
+| Video codec for the compression | H.265 | H.264 or H.265, with the graphics card or without |
+| Quality (higher is better) | 60 | 1–100; 60 is a good size for the quality |
 
 ## How video pages are resolved
 
@@ -520,6 +533,46 @@ The row shows `12.4 MB · 42/120 parts · 1.2 MB/s` while a stream is downloadin
 
 Links expire (the token has an `exp`), so a video whose link stopped working is looked up again
 automatically from its page URL.
+
+## Smaller files: the compression
+
+A stream that comes from the site is often much bigger than it needs to be. After a stream is
+downloaded it is re-encoded and saved as an ordinary `.mp4`, and the `.ts` is deleted.
+
+| encoder | 33 s of video | size | speed |
+|---|---|---|---|
+| the file from the site | 406×720 | 8.29 MB | — |
+| H.264 (libx264, CRF 24) | | 1.23 MB | 5× faster than real time |
+| **H.265 (libx265, CRF 29)** | | **1.33 MB** | 6× faster |
+| H.264 (graphics card) | | 1.6 MB | 20× faster |
+| **H.265 (graphics card)** | | **1.4 MB** | **20× faster** |
+
+(The numbers are from one of your own files, measured with VMAF so that the quality is the same.)
+
+**H.265 is the default** — it is the best size for the quality. H.264 plays everywhere, H.265
+needs a player that knows it (every Mac since 2017, Windows 10/11, Android 8, and every browser
+since 2023). The graphics card encoders are much faster but a little bigger.
+
+- **Compress the finished streams into .mp4** (in *Settings*) does this automatically after every
+  download
+- **Convert unconverted (N)** does the same for the videos that were downloaded earlier — and
+  also for the `.mp4` files that came straight from the server and were never compressed
+- the old, bigger file is deleted when the new one is ready
+- `ffmpeg` is needed for this. The app looks for it (and offers to install it on the first start
+  or after an update: `brew install ffmpeg` on macOS, `winget install Gyan.FFmpeg` on Windows).
+  You can also put the `ffmpeg` program next to the app
+
+## Videos that were downloaded twice
+
+The same video is often uploaded more than once, under different codes. Because two videos with
+the same title may not share a file name, the second one gets ` [code]` added to its name.
+
+**Check duplicates** looks for these:
+
+- finished videos with the same name whose **contents really match** (the size and a
+  fingerprint of the file) → the redundant one is deleted and taken out of the list
+- videos in the queue that point at the same file → the extra one is taken out of the queue, so
+  it is not downloaded again
 
 ## When something fails
 

@@ -1,6 +1,8 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
+mod convert;
 mod downloader;
+mod dupes;
 mod fetch;
 mod hls;
 mod model;
@@ -56,6 +58,7 @@ struct Row {
     hls: bool,
     hls_done: u32,
     hls_total: u32,
+    converting: bool,
 }
 
 #[derive(Default)]
@@ -76,6 +79,8 @@ struct Snap {
     settings: Settings,
     fetching: usize,
     new_links: usize,
+    unconverted: usize,
+    converting: usize,
 }
 
 enum Act {
@@ -96,11 +101,15 @@ enum Bulk {
 struct App {
     shared: Arc<Shared>,
     active: HashMap<u64, Active>,
+    /// the batch that turns the finished .ts files into .mp4
+    convert: Option<Active>,
     running: bool,
     input: String,
     filter: Filter,
     show_settings: bool,
     notice: Option<String>,
+    /// ffmpeg is missing: offer to install it
+    ask_ffmpeg: bool,
     last_save: Instant,
     _lock: Option<File>,
 }
@@ -179,16 +188,28 @@ impl App {
             ctx: cc.egui_ctx.clone(),
         });
         shared.refresh_progress();
+        // the first time (and after every update) we look whether ffmpeg is there
+        let ask_ffmpeg = {
+            let mut st = shared.lock();
+            let first = st.settings.ffmpeg_checked != env!("CARGO_PKG_VERSION");
+            st.settings.ffmpeg_checked = env!("CARGO_PKG_VERSION").to_string();
+            let want = st.settings.convert_hls;
+            (first, want)
+        };
+        let ask_ffmpeg =
+            ask_ffmpeg.0 && ask_ffmpeg.1 && crate::convert::find_ffmpeg(&shared).is_none();
         fetch::spawn_fetchers(&shared); // finish any links that were still waiting
 
         App {
             shared,
             active: HashMap::new(),
+            convert: None,
             running,
             input: String::new(),
             filter: Filter::All,
             show_settings: false,
             notice,
+            ask_ffmpeg,
             last_save: Instant::now(),
             _lock: lock,
         }
@@ -298,6 +319,7 @@ impl App {
                     hls: it.hls,
                     hls_done: it.hls_done,
                     hls_total: it.hls_total,
+                    converting: it.converting,
                 });
             }
         }
@@ -318,6 +340,12 @@ impl App {
                 .iter()
                 .filter(|l| l.status == LinkStatus::New)
                 .count(),
+            unconverted: st
+                .items
+                .iter()
+                .filter(|i| i.status == ItemStatus::Done && i.ext == "ts")
+                .count(),
+            converting: st.items.iter().filter(|i| i.converting).count(),
         }
     }
 
@@ -400,6 +428,91 @@ impl App {
             }
         }
         self.shared.touch();
+    }
+
+    /// Installs ffmpeg (it is needed to compress the streams).
+    fn install_ffmpeg(&mut self) {
+        let sh = self.shared.clone();
+        std::thread::spawn(move || {
+            let msg = match crate::convert::install() {
+                Ok(m) => match crate::convert::find_ffmpeg(&sh) {
+                    Some(p) => format!("ffmpeg is ready: {p} ({m})"),
+                    None => format!("{m}, but ffmpeg was not found afterwards"),
+                },
+                Err(e) => format!("ffmpeg could not be installed: {e}"),
+            };
+            sh.lock().notice = Some(msg);
+            sh.touch();
+        });
+    }
+
+    /// Looks for videos that were downloaded twice and throws the redundant ones away.
+    fn check_duplicates(&mut self) {
+        if self.convert.is_some() {
+            self.notice = Some("Wait until the conversion is finished.".into());
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        self.convert = Some(Active {
+            stop: stop.clone(),
+            done: done.clone(),
+        });
+        let sh = self.shared.clone();
+        self.shared.touch();
+        std::thread::spawn(move || {
+            let _guard = DoneGuard(done);
+            let report = crate::dupes::check(&sh, &stop);
+            let mut msg = format!(
+                "{} duplicate file(s) removed ({} freed), {} video(s) taken out of the queue.",
+                report.removed_files,
+                fmt_bytes(report.freed),
+                report.removed_queue
+            );
+            if report.groups > 0 {
+                msg.push_str(&format!(
+                    " {} name(s) had more than one video.",
+                    report.groups
+                ));
+            }
+            sh.lock().notice = Some(msg);
+            sh.touch();
+        });
+    }
+
+    /// Turns every finished video that was not compressed yet into a small .mp4.
+    fn convert_all(&mut self) {
+        if self.convert.is_some() {
+            return;
+        }
+        let ffmpeg = match crate::convert::find_ffmpeg(&self.shared) {
+            Some(p) => p,
+            None => {
+                self.notice = Some(
+                    "ffmpeg was not found. Install it (macOS: brew install ffmpeg) or put the \
+                     program next to the app, then try again."
+                        .into(),
+                );
+                return;
+            }
+        };
+        let ids = crate::convert::unconverted(&self.shared);
+        if ids.is_empty() {
+            self.notice = Some("Every finished video is already compressed.".into());
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        self.convert = Some(Active {
+            stop: stop.clone(),
+            done: done.clone(),
+        });
+        let sh = self.shared.clone();
+        self.shared.touch();
+        std::thread::spawn(move || {
+            let _guard = DoneGuard(done);
+            crate::convert::batch(sh, ids, &ffmpeg, &stop);
+        });
     }
 
     fn apply(&mut self, act: Act) {
@@ -493,6 +606,10 @@ impl eframe::App for App {
         let mut reference_txt = false;
         let mut export_links = false;
         let mut forget_used = false;
+        let mut convert_all = false;
+        let mut stop_convert = false;
+        let mut check_dupes = false;
+        let mut install_ffmpeg = false;
         let mut paste_clipboard = false;
         let mut open_dir: Option<String> = None;
         let mut settings_edit: Option<Settings> = None;
@@ -515,6 +632,35 @@ impl eframe::App for App {
                     ui.label(RichText::new(n).color(Color32::from_rgb(0xe8, 0xb8, 0x4a)));
                     if ui.small_button("Dismiss").clicked() {
                         self.notice = None;
+                    }
+                });
+            }
+            // ffmpeg is needed to compress the streams: offer to install it
+            if self.ask_ffmpeg {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(
+                            "ffmpeg is needed to compress the downloaded streams into small mp4 files.",
+                        )
+                        .color(Color32::from_rgb(0xe8, 0xb8, 0x4a)),
+                    );
+                    if ui.button("Install ffmpeg").clicked() {
+                        install_ffmpeg = true;
+                        self.ask_ffmpeg = false;
+                    }
+                    if ui.button("Not now").clicked() {
+                        self.ask_ffmpeg = false;
+                    }
+                });
+            }
+            // a message from a background job
+            let job_notice = self.shared.lock().notice.clone();
+            if let Some(n) = job_notice {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(n).color(Color32::from_rgb(0xe8, 0xb8, 0x4a)));
+                    if ui.small_button("Dismiss").clicked() {
+                        self.shared.lock().notice = None;
+                        self.shared.touch();
                     }
                 });
             }
@@ -561,6 +707,79 @@ impl eframe::App for App {
                             "Put videos from a folder link into their own sub-folder (for newly fetched links)",
                         )
                         .changed();
+                    changed |= ui
+                        .checkbox(&mut s.convert_hls, "Compress the finished streams into .mp4 (ffmpeg)")
+                        .changed();
+                    if s.convert_hls {
+                        let encs: Vec<(&str, u8)> = vec![
+                            (crate::convert::Encoder::H264Software.name(), 0),
+                            (crate::convert::Encoder::H265Software.name(), 1),
+                            (crate::convert::Encoder::H264Hardware.name(), 2),
+                            (crate::convert::Encoder::H265Hardware.name(), 3),
+                        ];
+                        let mut picked = encs
+                            .iter()
+                            .find(|(_, v)| *v == s.video_codec)
+                            .map(|(n, _)| *n)
+                            .unwrap_or(encs[0].0);
+                        if ui
+                            .selectable_value(&mut picked, encs[0].0, encs[0].0)
+                            .clicked()
+                        {
+                            s.video_codec = 0;
+                        }
+                        for (name, v) in &encs[1..] {
+                            let label = if cfg!(target_os = "macos") {
+                                (*name).to_string()
+                            } else {
+                                format!("{name} (macOS only)")
+                            };
+                            if ui.selectable_value(&mut picked, *name, label).clicked() {
+                                s.video_codec = *v;
+                            }
+                        }
+                        changed |= ui
+                            .add(egui::Slider::new(&mut s.quality, 1..=100).text("Quality (higher is better)"))
+                            .changed();
+                        let ff = crate::convert::find_ffmpeg(&self.shared);
+                        match &ff {
+                            Some(p) => {
+                                ui.label(
+                                    RichText::new(format!("ffmpeg: {p}")).small().weak(),
+                                );
+                            }
+                            None => {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        RichText::new("ffmpeg was not found")
+                                            .small()
+                                            .color(Color32::from_rgb(0xe8, 0xb8, 0x4a)),
+                                    );
+                                    if ui.button("Install ffmpeg").clicked() {
+                                        install_ffmpeg = true;
+                                    }
+                                    match crate::convert::installer() {
+                                        Some(crate::convert::Installer::Command(p, a)) => {
+                                            ui.label(
+                                                RichText::new(format!("({p} {})", a.join(" ")))
+                                                    .small()
+                                                    .weak(),
+                                            );
+                                        }
+                                        Some(crate::convert::Installer::Manual(how)) => {
+                                            ui.label(RichText::new(how).small().weak());
+                                        }
+                                        None => {}
+                                    }
+                                });
+                            }
+                        }
+                        if !s.ffmpeg.is_empty() {
+                            changed |= ui
+                                .add(egui::TextEdit::singleline(&mut s.ffmpeg).hint_text("path to ffmpeg"))
+                                .changed();
+                        }
+                    }
                     if changed {
                         settings_edit = Some(s);
                     }
@@ -668,6 +887,20 @@ impl eframe::App for App {
                 }
                 if ui.add_enabled(c.done > 0, egui::Button::new("Clear finished")).clicked() {
                     bulk = Some(Bulk::ClearDone);
+                }
+                if snap.converting > 0 {
+                    if ui.button("Stop converting").clicked() {
+                        stop_convert = true;
+                    }
+                } else if snap.unconverted > 0
+                    && ui
+                        .button(format!("Convert unconverted ({})", snap.unconverted))
+                        .clicked()
+                {
+                    convert_all = true;
+                }
+                if ui.button("Check duplicates").clicked() {
+                    check_dupes = true;
                 }
                 ui.separator();
                 for (f, name, n) in [
@@ -909,7 +1142,14 @@ impl eframe::App for App {
                                 ItemStatus::Failed => ("Failed", RED),
                             };
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(txt).color(col));
+                                if r.converting {
+                                    ui.label(
+                                        RichText::new("Converting...")
+                                            .color(Color32::from_rgb(0xe8, 0xb8, 0x4a)),
+                                    );
+                                } else {
+                                    ui.label(RichText::new(txt).color(col));
+                                }
                                 // the reason is shown right here on the row ("retry 2/6: …")
                                 if !r.error.is_empty() {
                                     let c = if retrying {
@@ -1014,11 +1254,43 @@ impl eframe::App for App {
             {
                 match fs::read_to_string(&p) {
                     Ok(text) => {
-                        let codes: Vec<String> = resolver::parse_links(&text)
-                            .into_iter()
-                            .map(|x| x.code)
+                        let parsed = resolver::parse_links(&text);
+                        let videos: Vec<String> = parsed
+                            .iter()
+                            .filter(|p| p.kind == model::LinkKind::Single)
+                            .map(|p| p.code.clone())
                             .collect();
-                        let n = self.shared.lock().add_used(codes);
+                        let folders: Vec<String> = parsed
+                            .iter()
+                            .filter(|p| p.kind == model::LinkKind::Folder)
+                            .map(|p| p.code.clone())
+                            .collect();
+                        let n = self.shared.lock().add_used(videos);
+                        let nf = self.shared.lock().add_used_folders(folders.clone());
+                        // a folder in the reference means "I have everything in it":
+                        // look inside it so that single links of that folder are skipped too
+                        if !folders.is_empty() {
+                            let sh = self.shared.clone();
+                            std::thread::spawn(move || {
+                                let mut found = 0;
+                                for code in folders {
+                                    let url = format!("https://filecoster.com/f/{code}");
+                                    if let Ok((files, _)) =
+                                        resolver::crawl_folder(&sh.agent, &url, false)
+                                    {
+                                        let codes: Vec<String> =
+                                            files.iter().map(|f| f.code.clone()).collect();
+                                        found += codes.len();
+                                        sh.lock().add_used(codes);
+                                    }
+                                }
+                                sh.lock().notice = Some(format!(
+                                    "The reference list now holds {found} video(s): the folders were \
+                                     looked through, so single links of those folders are skipped too."
+                                ));
+                                sh.touch();
+                            });
+                        }
                         // the videos we already have do not have to be in the queue
                         let removed: Vec<Item> = {
                             let mut st = self.shared.lock();
@@ -1039,7 +1311,7 @@ impl eframe::App for App {
                         }
                         self.shared.touch();
                         self.notice = Some(format!(
-                            "{n} video(s) added to the reference list, {} taken out of the queue. They are skipped from now on.",
+                            "{n} video(s) and {nf} folder(s) added to the reference list, {} taken out of the queue. They are skipped from now on.",
                             removed.len()
                         ));
                     }
@@ -1078,6 +1350,20 @@ impl eframe::App for App {
                     }
                     Err(e) => self.notice = Some(format!("Could not write {}: {e}", p.display())),
                 }
+            }
+        }
+        if convert_all {
+            self.convert_all();
+        }
+        if check_dupes {
+            self.check_duplicates();
+        }
+        if install_ffmpeg {
+            self.install_ffmpeg();
+        }
+        if stop_convert {
+            if let Some(c) = &self.convert {
+                c.stop.store(true, Ordering::SeqCst);
             }
         }
         if forget_used {

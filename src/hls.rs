@@ -503,5 +503,11 @@ pub fn attempt(
         it.downloaded = written;
         it.size = Some(written);
     });
+    // turn it into an ordinary .mp4 when the user wants that (the .ts is deleted afterwards)
+    if sh.lock().settings.convert_hls && item.ext == "ts" {
+        if let Some(ffmpeg) = crate::convert::find_ffmpeg(sh) {
+            let _ = crate::convert::convert_item(sh, id, &ffmpeg, stop);
+        }
+    }
     Ok(Outcome::Done)
 }

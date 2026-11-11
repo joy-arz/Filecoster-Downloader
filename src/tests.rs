@@ -188,6 +188,8 @@ fn folder_rule_and_names() {
         hls_done: 0,
         hls_total: 0,
         hls_bytes: 0,
+        converting: false,
+        converted: false,
         downloaded: 0,
         speed: 0.0,
     };
@@ -1042,7 +1044,158 @@ fn failures_are_written_to_one_log_file() {
     assert!(text.contains("abc123") && text.contains("zzz999"), "{text}");
 }
 
-/// The three ways a server can mess up a resume, and what the downloader has to do about it.
+/// The conversion with ffmpeg (skipped when ffmpeg is not installed).
+#[test]
+fn converts_a_stream_into_a_smaller_mp4() {
+    let dir = tmp("convert");
+    let sh = shared(&dir);
+    let Some(ffmpeg) = crate::convert::find_ffmpeg(&sh) else {
+        eprintln!("ffmpeg is not installed, skipping");
+        return;
+    };
+    // it is in the queue as a finished stream
+    sh.lock().add_item(
+        "conv1",
+        "https://filecoster.com/d/conv1",
+        "Movie",
+        "",
+        None,
+        None,
+        "ts",
+        None,
+        true,
+    );
+    let id = sh.lock().items[0].id;
+    let it0 = sh.lock().items[0].clone();
+    let dest = sh.item_dir(&it0);
+    std::fs::create_dir_all(&dest).unwrap();
+    let ts = dest.join("Movie.ts");
+
+    // a small video to convert
+    let ok = std::process::Command::new(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=10:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&ts)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("ffmpeg cannot make a test video, skipping");
+        return;
+    }
+    let before = std::fs::metadata(&ts).unwrap().len();
+    {
+        let mut st = sh.lock();
+        let it = st.items.iter_mut().find(|i| i.id == id).unwrap();
+        it.status = ItemStatus::Done;
+        it.size = Some(before);
+    }
+
+    crate::convert::convert_item(&sh, id, &ffmpeg, &AtomicBool::new(false)).expect("converted");
+
+    let it = sh.lock().items[0].clone();
+    assert_eq!(it.ext, "mp4", "the item is an mp4 now");
+    assert!(it.converted, "it is marked as compressed");
+    let mp4 = sh.item_dir(&it).join(file_name_of(&it.stem, "mp4"));
+    assert!(mp4.is_file(), "the mp4 is there");
+    assert!(!ts.is_file(), "the old .ts is gone");
+    let after = std::fs::metadata(&mp4).unwrap().len();
+    assert!(after > 0);
+    assert_eq!(it.size, Some(after), "the size is up to date");
+}
+
+/// The duplicate check finds the videos that were downloaded twice and removes the extra one.
+#[test]
+fn finds_and_removes_the_downloaded_duplicates() {
+    let dir = tmp("dupes");
+    let sh = shared(&dir);
+
+    // two videos with the same title: the second one got " [code]" added
+    sh.lock().add_item(
+        "aaa",
+        "https://filecoster.com/d/aaa",
+        "Same Movie",
+        "",
+        None,
+        None,
+        "mp4",
+        None,
+        false,
+    );
+    sh.lock().add_item(
+        "bbb",
+        "https://filecoster.com/d/bbb",
+        "Same Movie",
+        "",
+        None,
+        None,
+        "mp4",
+        None,
+        false,
+    );
+    {
+        let mut st = sh.lock();
+        st.items[0].stem = "Same Movie".into();
+        st.items[1].stem = "Same Movie [bbb]".into();
+        for it in st.items.iter_mut() {
+            it.status = ItemStatus::Done;
+        }
+    }
+    // both files have the same content
+    let folder = sh.subdir_dir("");
+    std::fs::create_dir_all(&folder).unwrap();
+    for stem in ["Same Movie", "Same Movie [bbb]"] {
+        std::fs::write(folder.join(format!("{stem}.mp4")), b"the very same bytes").unwrap();
+    }
+
+    let report = crate::dupes::check(&sh, &AtomicBool::new(false));
+    assert_eq!(report.removed_files, 1, "the extra file is removed");
+    assert_eq!(report.groups, 1);
+    assert!(report.freed > 0);
+
+    let st = sh.lock();
+    assert_eq!(st.items.len(), 1, "the video is only in the list once");
+    assert!(
+        !folder.join("Same Movie [bbb].mp4").exists(),
+        "the extra file is gone"
+    );
+    assert!(
+        folder.join("Same Movie.mp4").exists(),
+        "the first one stays"
+    );
+}
+
+/// A folder in the reference list means "I have everything in it".
+#[test]
+fn a_folder_in_the_reference_list_is_remembered() {
+    let mut st = State::default();
+    assert_eq!(st.add_used_folders(["abc123".to_string()]), 1);
+    assert!(st.is_known_folder("abc123"));
+    assert!(!st.is_known_folder("other"));
+
+    // the whole folder is skipped
+    assert!(!st.add_link(
+        LinkKind::Folder,
+        "abc123",
+        "https://filecoster.com/f/abc123"
+    ));
+    assert!(st.links.is_empty());
+    // a video of that folder is only skipped when it is in the list of videos
+    assert!(st.add_link(LinkKind::Single, "xyz", "https://filecoster.com/d/xyz"));
+}
+
 #[test]
 fn resume_survives_a_server_that_ignores_or_lies_about_ranges() {
     let agent = resolver::agent();

@@ -92,6 +92,12 @@ pub struct Item {
     /// bytes of the finished parts (the .part file is cut back to this when we continue)
     #[serde(default)]
     pub hls_bytes: u64,
+    /// the video is being converted to .mp4 right now
+    #[serde(skip)]
+    pub converting: bool,
+    /// the video was already compressed with ffmpeg
+    #[serde(default)]
+    pub converted: bool,
     #[serde(skip)]
     pub downloaded: u64,
     #[serde(skip)]
@@ -165,6 +171,16 @@ pub struct Settings {
     pub retries: u32,
     pub auto_resume: bool,
     pub group_folders: bool,
+    /// turn the finished HLS streams into .mp4 with ffmpeg
+    pub convert_hls: bool,
+    /// where ffmpeg is (empty = look for it)
+    pub ffmpeg: String,
+    /// which encoder: 0 = H.264, 1 = H.265, 2 = H.264 graphics card, 3 = H.265 graphics card
+    pub video_codec: u8,
+    /// the quality of the conversion: higher is better
+    pub quality: u32,
+    /// the version that was checked for ffmpeg (a new version looks again)
+    pub ffmpeg_checked: String,
 }
 
 impl Default for Settings {
@@ -175,6 +191,11 @@ impl Default for Settings {
             retries: 6,
             auto_resume: true,
             group_folders: true,
+            convert_hls: true,
+            ffmpeg: String::new(),
+            video_codec: 1, // H.265: the best size for the quality
+            quality: 60,
+            ffmpeg_checked: String::new(),
         }
     }
 }
@@ -189,6 +210,12 @@ pub struct State {
     /// the codes of the videos we already have (from the reference .txt): they are never
     /// downloaded again, no matter which folder they turn up in
     pub used: BTreeSet<String>,
+    /// the folder codes we already have (from the reference .txt): the whole folder is skipped
+    #[serde(default)]
+    pub used_folders: BTreeSet<String>,
+    /// a message from a background job (the duplicate check, the conversion)
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 impl State {
@@ -238,6 +265,11 @@ impl State {
         self.used.contains(code)
     }
 
+    /// Do we already have this whole folder?
+    pub fn is_known_folder(&self, code: &str) -> bool {
+        self.used_folders.contains(code)
+    }
+
     /// Remembers the videos we already have. Returns how many were new.
     pub fn add_used(&mut self, codes: impl IntoIterator<Item = String>) -> usize {
         let mut n = 0;
@@ -250,12 +282,27 @@ impl State {
         n
     }
 
+    /// Remembers the folders we already have. Returns how many were new.
+    pub fn add_used_folders(&mut self, codes: impl IntoIterator<Item = String>) -> usize {
+        let mut n = 0;
+        for c in codes {
+            let c = c.trim().to_ascii_lowercase();
+            if !c.is_empty() && self.used_folders.insert(c) {
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Returns false if this link is already in the list (an errored one is re-armed instead),
     /// or if we already have the video (reference list).
     /// /d/, /s/ and /e/ with the same code are the same video, so they count as one.
     pub fn add_link(&mut self, kind: LinkKind, code: &str, url: &str) -> bool {
         if self.is_known(code) {
             return false; // we already have this one
+        }
+        if kind == LinkKind::Folder && self.is_known_folder(code) {
+            return false; // we already have this whole folder
         }
         if let Some(l) = self.links.iter_mut().find(|l| {
             l.code == code
@@ -326,6 +373,8 @@ impl State {
             hls_done: 0,
             hls_total: 0,
             hls_bytes: 0,
+            converting: false,
+            converted: false,
             downloaded: 0,
             speed: 0.0,
         });
