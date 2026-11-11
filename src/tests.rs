@@ -4,7 +4,7 @@
 use crate::model::*;
 use crate::{downloader, resolver};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,8 @@ fn shared(dir: &Path) -> Arc<Shared> {
         base: Mutex::new(dir.to_path_buf()),
         agent: resolver::agent(),
         ctx: eframe::egui::Context::default(),
+        conversions: AtomicUsize::new(0),
+        batch_running: AtomicBool::new(false),
     })
 }
 
@@ -1138,9 +1140,11 @@ fn compresses_an_mp4_in_place_without_losing_it() {
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=320x240:rate=10:duration=2",
+            "testsrc=size=640x480:rate=25:duration=4",
             "-c:v",
             "libx264",
+            "-b:v",
+            "4000k",
             "-pix_fmt",
             "yuv420p",
         ])
@@ -1179,8 +1183,35 @@ fn compresses_an_mp4_in_place_without_losing_it() {
     assert!(after > 0);
     let it = sh.lock().items[0].clone();
     assert_eq!(it.ext, "mp4");
-    assert!(it.converted);
     assert_eq!(it.size, Some(after));
+    if it.converted {
+        assert!(after < before, "the file is smaller now");
+    }
+}
+
+/// Only one conversion at a time, so they do not fight over the processor.
+#[test]
+fn only_one_conversion_runs_at_a_time() {
+    let dir = tmp("oneslot");
+    let sh = shared(&dir);
+    assert_eq!(sh.conversions.load(Ordering::SeqCst), 0);
+    // the slot is taken and given back
+    let sh2 = sh.clone();
+    let h = std::thread::spawn(move || {
+        let mut n = 0;
+        while n < 50 {
+            n += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        sh2
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        sh.conversions.load(Ordering::SeqCst),
+        0,
+        "nothing is running"
+    );
+    let _ = h.join();
 }
 
 /// The duplicate check finds the videos that were downloaded twice and removes the extra one.

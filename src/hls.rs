@@ -504,7 +504,12 @@ pub fn attempt(
         it.size = Some(written);
     });
     // turn it into an ordinary .mp4 when the user wants that (the .ts is deleted afterwards)
-    if sh.lock().settings.convert_hls && item.ext == "ts" {
+    // while the big batch is running the new downloads keep their .ts, so the downloads are
+    // not held up by the conversion
+    if sh.lock().settings.convert_hls
+        && item.ext == "ts"
+        && !sh.batch_running.load(Ordering::SeqCst)
+    {
         if let Some(ffmpeg) = crate::convert::find_ffmpeg(sh) {
             let _ = crate::convert::convert_item(sh, id, &ffmpeg, stop);
         }

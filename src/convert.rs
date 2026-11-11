@@ -208,7 +208,7 @@ pub fn convert_one(
     quality: u32,
     stop: &AtomicBool,
     mut on_progress: impl FnMut(f64),
-) -> Result<(), String> {
+) -> Result<String, String> {
     let total = duration(ffmpeg, input);
     // write next to the target and move it into place when it is done
     // (the name keeps the .mp4 ending, so ffmpeg knows the format)
@@ -273,11 +273,33 @@ pub fn convert_one(
     if !tmp.is_file() {
         return Err("ffmpeg did not write the file".into());
     }
-    // the new file is ready: put it in place
-    let _ = std::fs::remove_file(output);
-    std::fs::rename(&tmp, output).map_err(|e| format!("could not rename the file: {e}"))?;
+    // the new file is ready, but it is not put in place yet: the caller first checks that it
+    // is really smaller than the old one
     on_progress(1.0);
-    Ok(())
+    Ok(tmp.to_string_lossy().into_owned())
+}
+
+/// Waits until there is room for another conversion.
+///
+/// Only one at a time: the software encoder (libx264/libx265) uses every core of the
+/// processor, so two of them at the same time are twice as slow as one after the other.
+fn acquire(sh: &Shared) {
+    loop {
+        let n = sh.conversions.load(Ordering::SeqCst);
+        if n == 0
+            && sh
+                .conversions
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+fn release(sh: &Shared) {
+    sh.conversions.store(0, Ordering::SeqCst);
 }
 
 /// Converts one item of the queue: the .ts becomes a .mp4 and the .ts is deleted.
@@ -312,17 +334,36 @@ pub fn convert_item(sh: &Shared, id: u64, ffmpeg: &str, stop: &AtomicBool) -> Re
         it.converting = true;
         it.error.clear();
     });
+    // the size of the file before the conversion (for an .mp4 it is replaced in place)
+    let old_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+    acquire(sh);
     let res = convert_one(ffmpeg, &input, &output, enc, quality, stop, |frac| {
         sh.update(id, |it| it.downloaded = (frac * size as f64) as u64);
     });
+    release(sh);
     match res {
-        Ok(()) => {
-            // the old, bigger file goes – but only when it is a different file than the new
-            // one (an .mp4 that came from the server is compressed in place)
+        Ok(tmp) => {
+            let new_size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            if old_size > 0 && new_size >= old_size {
+                // the new file is not smaller: the old one stays
+                let _ = std::fs::remove_file(&tmp);
+                sh.update(id, |it| {
+                    it.converting = false;
+                    it.downloaded = old_size;
+                    it.size = Some(old_size);
+                });
+                sh.touch();
+                return Err("the compressed file was not smaller, the old one was kept".into());
+            }
+            // the new file is in place, now the old one goes
             if input != output {
                 let _ = std::fs::remove_file(&input);
             }
-            let new_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&output);
+            if let Err(e) = std::fs::rename(&tmp, &output) {
+                sh.update(id, |it| it.converting = false);
+                return Err(format!("could not rename the file: {e}"));
+            }
             sh.update(id, |it| {
                 if it.ext != "mp4" {
                     it.ext = "mp4".into();
@@ -348,12 +389,14 @@ pub fn convert_item(sh: &Shared, id: u64, ffmpeg: &str, stop: &AtomicBool) -> Re
 
 /// Converts every finished video that is still a .ts.
 pub fn batch(sh: Arc<Shared>, ids: Vec<u64>, ffmpeg: &str, stop: &AtomicBool) {
+    sh.batch_running.store(true, Ordering::SeqCst);
     for id in ids {
         if stop.load(Ordering::Relaxed) {
             break;
         }
         let _ = convert_item(&sh, id, ffmpeg, stop);
     }
+    sh.batch_running.store(false, Ordering::SeqCst);
 }
 
 /// How ffmpeg can be installed on this computer.

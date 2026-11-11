@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 /// Name of the folder videos are saved into (found on the drive, or created).
@@ -664,6 +664,10 @@ pub struct Shared {
     pub base: Mutex<PathBuf>,
     pub agent: ureq::Agent,
     pub ctx: egui::Context,
+    /// how many conversions are running at the same time
+    pub conversions: AtomicUsize,
+    /// the batch that converts everything that is left is running
+    pub batch_running: AtomicBool,
 }
 
 impl Shared {

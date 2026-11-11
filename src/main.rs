@@ -16,7 +16,7 @@ use fs2::FileExt;
 use model::*;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -186,6 +186,8 @@ impl App {
             base: Mutex::new(base),
             agent,
             ctx: cc.egui_ctx.clone(),
+            conversions: AtomicUsize::new(0),
+            batch_running: AtomicBool::new(false),
         });
         shared.refresh_progress();
         // the first time (and after every update) we look whether ffmpeg is there
@@ -741,6 +743,18 @@ impl eframe::App for App {
                         changed |= ui
                             .add(egui::Slider::new(&mut s.quality, 1..=100).text("Quality (higher is better)"))
                             .changed();
+                        if cfg!(target_os = "macos")
+                            && (s.video_codec == 1 || s.video_codec == 0)
+                        {
+                            ui.label(
+                                RichText::new(
+                                    "The graphics card is about 3 times faster and leaves the \
+                                     processor free for the downloads.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        }
                         let ff = crate::convert::find_ffmpeg(&self.shared);
                         match &ff {
                             Some(p) => {
